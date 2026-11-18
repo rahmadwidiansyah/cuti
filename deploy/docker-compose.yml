@@ -1,0 +1,57 @@
+name: cuti
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: app
+    image: cuti-app:local
+    env_file:
+      - .env
+    restart: unless-stopped
+    init: true
+    ports:
+      # Hanya loopback, karena TLS diputus Cloudflare Tunnel.
+      - "127.0.0.1:${APP_PORT:-3989}:80"
+    volumes:
+      - ./data/storage:/app/server/storage
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - internal
+
+  # Jalankan dengan: docker compose --profile tunnel up -d
+  # Origin di dashboard Cloudflare: http://app:80
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge

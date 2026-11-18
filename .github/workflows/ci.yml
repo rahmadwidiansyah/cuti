@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build dan test unit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Siapkan Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Pasang dependensi
+        run: npm ci
+
+      - name: Cek sintaks server
+        run: |
+          for f in server/*.js; do
+            node --check "$f"
+          done
+
+      - name: Test unit tanpa database
+        run: |
+          node --test \
+            server/tests/approval_stages.test.js \
+            server/tests/attachment_validation.test.js \
+            server/tests/cancel_endpoint.test.js \
+            server/tests/cancellation_helpers.test.js \
+            server/tests/comprehensive_cancellation.test.js \
+            server/tests/notifications.test.js \
+            server/tests/report_pdf.test.js \
+            server/tests/request_detail.test.js \
+            server/tests/withdraw_endpoint.test.js
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Simpan hasil build
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  image:
+    name: Image aplikasi
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Siapkan buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tentukan nama image
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cuti-app" >> "$GITHUB_OUTPUT"
+
+      - name: Build dan push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: app
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.name }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+          provenance: false
+
+      - name: Ukur ukuran image
+        run: |
+          docker buildx build \
+            --target app \
+            --load \
+            --cache-from type=gha,scope=app \
+            -t cuti-app:size-check .
+          bytes=$(docker image inspect cuti-app:size-check --format '{{.Size}}')
+          mb=$((bytes / 1024 / 1024))
+          echo "Ukuran image: ${mb} MB" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$mb" -gt 400 ]; then
+            echo "::error::Ukuran image ${mb} MB melebihi batas 400 MB"
+            exit 1
+          fi
