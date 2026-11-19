@@ -4357,7 +4357,6 @@ app.get('/api/requests/:id/preview-document', requireAuth, asyncRoute(async (req
       signatures: document.signatures,
       balances: document.balances,
       employeeSignature: document.employeeSignature,
-      documentHash: document.sourceHash,
       letterNumber: document.request.letter_number || '',
       previewMode: true,
       signatureImageLoader,
@@ -4366,6 +4365,8 @@ app.get('/api/requests/:id/preview-document', requireAuth, asyncRoute(async (req
   })
   res.setHeader('Content-Type', 'application/pdf')
   res.setHeader('Content-Disposition', `inline; filename="Pratinjau-${result.request.request_number}.pdf"`)
+  // Pratinjau selalu dibuat ulang; jangan biarkan browser memakai PDF lama.
+  res.setHeader('Cache-Control', 'no-store, max-age=0')
   res.send(result.pdf)
 }))
 
@@ -4436,17 +4437,13 @@ app.get('/api/requests/:id/pdf', requireAuth, asyncRoute(async (req, res) => {
       )
     }
 
-    const baseUrl = await settingValue(client, 'verification.qr_base_url', 'https://cuti.internal/verifikasi')
     const token = crypto.randomBytes(24).toString('hex')
-    const verificationUrl = `${baseUrl.replace(/\/$/, '')}/${token}`
     const pdf = await generateLeavePdf({
       request: { ...request, letter_number: letterNumber },
       approvals: document.approvals,
       signatures: document.signatures,
       balances: document.balances,
       employeeSignature: document.employeeSignature,
-      verificationUrl,
-      documentHash: document.sourceHash,
       letterNumber,
       previewMode: false,
       signatureImageLoader,

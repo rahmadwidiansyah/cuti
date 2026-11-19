@@ -93,6 +93,8 @@ jobs:
           context: .
           file: ./Dockerfile
           target: app
+          build-args: |
+            VITE_SHOW_DEMO_LOGIN=${{ vars.VITE_SHOW_DEMO_LOGIN || 'true' }}
           push: true
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.sha }}
@@ -110,6 +112,7 @@ jobs:
           docker buildx build \
             --target app \
             --load \
+            --build-arg VITE_SHOW_DEMO_LOGIN=${{ vars.VITE_SHOW_DEMO_LOGIN || 'true' }} \
             --cache-from type=gha,scope=app \
             -t cuti-app:size-check .
           bytes=$(docker image inspect cuti-app:size-check --format '{{.Size}}')

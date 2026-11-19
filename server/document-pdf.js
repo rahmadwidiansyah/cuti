@@ -2,11 +2,10 @@ import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import PDFDocument from 'pdfkit'
-import QRCode from 'qrcode'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-export const DOCUMENT_TEMPLATE_VERSION = '2026-11-form-exact2'
+export const DOCUMENT_TEMPLATE_VERSION = '2026-11-form-exact5'
 const FONT_PATH = resolve(__dirname, 'assets/fonts/Gotham-Light.otf')
 const HAS_FONT = existsSync(FONT_PATH)
 const FONT = HAS_FONT ? 'GothamLight' : 'Helvetica'
@@ -14,11 +13,19 @@ const FONT_BOLD = HAS_FONT ? 'GothamLight' : 'Helvetica-Bold'
 const PAGE_W = 595.28
 const MARGIN = 36
 const PAGE_MARGIN_Y = 2.85
+// Margin atas 1,27 cm (36 pt), sesuai permintaan.
+const PAGE_MARGIN_TOP = 36
 const TEXT_W = 523.28
 const TABLE_X = 27.9
 const CONTENT_W = 553.5
 const LINE = '#000000'
 const PAD = 2
+// Jarak antar tabel bagian, seperti paragraf kosong di sampel surat.
+// Dibatasi 4 pt agar catatan kaki dan QR tetap muat di halaman yang sama.
+const SECTION_GAP = 4
+// Blok alamat rata kiri pada indent 326,05 pt (6521 twips) seperti sampel.
+const HEADER_X = MARGIN + 326.05
+const HEADER_LINE = 10.5
 const BOLD_STROKE = 0.25
 const LOGO_PATH = resolve(__dirname, 'assets/tvri-logo.png')
 const LOGO_W = 66.7
@@ -44,10 +51,27 @@ const CATATAN_RIGHT_FULL = [
 const CATATAN_RIGHT_SHORT = ['CUTI MELAHIRKAN', 'CUTI SAKIT']
 
 const OFFICIALS = {
-  KASUBAG: { lines: ['Kepala Sub Bagian Tata Usaha', 'HENDRO RAGIL PRIYANTO, S.Kom.', 'NIP. 196912281991031004'] },
-  KEPSTA: { lines: ['Kepala TVRI Stasiun Jawa Tengah,', 'SANNY APRIL LINDA D., S.Pd.,M.IKom.', 'NIP. 196904031998032004'] },
-  PPK: { lines: ['Analis Pengelolaan Keuangan', 'APBN Ahli Muda', 'DWI PURNAMASARI, S.E.', 'NIP. 197108181998032000'] },
-  PP_UMUM: { lines: ['Analis SDM Aparatur Ahli Madya', 'FAJAR PRIYO SUSILO, S.E.', 'NIP. 197009231998031007'] },
+  KASUBAG: {
+    imageAfter: 1,
+    lines: ['Kepala Sub Bagian Tata Usaha', 'HENDRO RAGIL PRIYANTO, S.Kom.', 'NIP. 196912281991031004'],
+  },
+  KEPSTA: {
+    imageAfter: 1,
+    lines: ['Kepala TVRI Stasiun Jawa Tengah,', 'SANNY APRIL LINDA D., S.Pd.,M.IKom.', 'NIP. 196904031998032004'],
+  },
+  PPK: {
+    imageAfter: 2,
+    lines: [
+      'Analis Pengelolaan Keuangan',
+      'APBN Ahli Muda',
+      'DWI PURNAMASARI, S.E.',
+      'NIP. 197108181998032000',
+    ],
+  },
+  PP_UMUM: {
+    imageAfter: 1,
+    lines: ['Analis SDM Aparatur Ahli Madya', 'FAJAR PRIYO SUSILO, S.E.', 'NIP. 197009231998031007'],
+  },
 }
 
 const FORMS = {
@@ -200,33 +224,46 @@ function drawRow(doc, y, cells, { height = 14, size = 9, x = TABLE_X } = {}) {
   const widths = cells.reduce((sum, cell) => sum + cell.w, 0)
   const scale = Math.abs(widths - CONTENT_W) < 0.5 ? 1 : CONTENT_W / widths
   let rowHeight = height
+  let bottomPad = 0
   for (const cell of cells) {
     const w = cell.w * scale
     const padX = cell.padX ?? PAD
     if (cell.text) {
-      rowHeight = Math.max(rowHeight, measureText(doc, cell.text, w - 2 * padX, {
+      // Lebar ukur harus sama dengan lebar gambar, termasuk ruang kotak centang.
+      const textWidth = w - 2 * padX - (cell.cb !== undefined ? 12 : 0)
+      rowHeight = Math.max(rowHeight, measureText(doc, cell.text, textWidth, {
         bold: cell.bold, size: cell.size ?? size, align: cell.align ?? (cell.center ? 'center' : 'left'),
       }) + 2 * PAD)
     }
     if (cell.minH) rowHeight = Math.max(rowHeight, cell.minH)
-    if (cell.lines) rowHeight = Math.max(rowHeight, cell.lines.length * (cell.lineSize ?? 9) + 2 * PAD + 2)
-    if (cell.image && (cell.lines || cell.text)) rowHeight = Math.max(rowHeight, 20 + (cell.lines?.length ?? 1) * 8 + 2 * PAD)
+    const lineSize = cell.lineSize ?? 9
+    if (cell.lines) rowHeight = Math.max(rowHeight, cell.lines.length * lineSize + 2 * PAD + 2)
+    if (cell.imageAfter !== undefined) {
+      // Area tanda tangan disisihkan setelah baris jabatan, walau gambar belum ada.
+      rowHeight = Math.max(rowHeight, (cell.lines?.length ?? 0) * lineSize + (cell.imageHeight ?? 34) + 2 * PAD)
+    } else if (cell.image && (cell.lines || cell.text)) {
+      rowHeight = Math.max(rowHeight, (cell.imageHeight ?? 20) + (cell.lines?.length ?? 1) * lineSize + 2 * PAD)
+    }
+    if (cell.bottomPad) bottomPad = Math.max(bottomPad, cell.bottomPad)
   }
+  rowHeight += bottomPad
 
   let cursor = x
   for (const cell of cells) {
     const w = cell.w * scale
     const padX = cell.padX ?? PAD
-    const imageH = cell.image && (cell.lines || cell.text) ? 20 : 0
+    const imageH = cell.imageAfter === undefined && cell.image && (cell.lines || cell.text) ? (cell.imageHeight ?? 20) : 0
     const textBaseY = y + imageH + PAD
-    doc.rect(cursor, y, w, rowHeight).strokeColor(LINE).lineWidth(0.7).stroke()
+    if (cell.border !== false) {
+      doc.rect(cursor, y, w, rowHeight).strokeColor(LINE).lineWidth(0.7).stroke()
+    }
     doc.fillColor(LINE)
 
     if (cell.cb !== undefined) {
       drawCheckbox(doc, cursor + w - 12, y + (rowHeight - 8) / 2, Boolean(cell.cb))
     }
     if (cell.text) {
-      const textWidth = w - 2 * padX - (cell.cb !== undefined ? 10 : 0)
+      const textWidth = w - 2 * padX - (cell.cb !== undefined ? 12 : 0)
       const textHeight = measureText(doc, cell.text, textWidth, {
         bold: cell.bold, size: cell.size ?? size, align: cell.align ?? (cell.center ? 'center' : 'left'),
       })
@@ -240,19 +277,41 @@ function drawRow(doc, y, cells, { height = 14, size = 9, x = TABLE_X } = {}) {
       })
     }
     if (cell.lines) {
-      let lineY = textBaseY
-      for (const line of cell.lines) {
-        drawText(doc, line, cursor + padX, lineY, {
-          size: cell.lineSize ?? 9, width: w - 2 * padX, align: cell.align ?? 'center',
+      const lineSize = cell.lineSize ?? 9
+      if (cell.imageAfter !== undefined) {
+        let lineY = y + PAD
+        cell.lines.forEach((line, index) => {
+          if (index === cell.imageAfter) lineY += cell.imageHeight ?? 34
+          if (line) {
+            drawText(doc, line, cursor + padX, lineY, {
+              size: lineSize, width: w - 2 * padX, align: cell.align ?? 'center',
+            })
+          }
+          lineY += lineSize
         })
-        lineY += cell.lineSize ?? 9
+      } else {
+        let lineY = textBaseY
+        for (const line of cell.lines) {
+          if (line) {
+            drawText(doc, line, cursor + padX, lineY, {
+              size: lineSize, width: w - 2 * padX, align: cell.align ?? 'center',
+            })
+          }
+          lineY += lineSize
+        }
       }
     }
     if (cell.image) {
       try {
-        doc.image(cell.image, cursor + padX, y + PAD, {
-          fit: [w - 2 * padX, imageH || Math.max(12, rowHeight - 6)],
-          align: 'center', valign: 'top',
+        const imageY = cell.imageAfter !== undefined
+          ? y + PAD + cell.imageAfter * (cell.lineSize ?? 9)
+          : y + PAD
+        const fitH = cell.imageAfter !== undefined
+          ? (cell.imageHeight ?? 34)
+          : (imageH || Math.max(12, rowHeight - 6))
+        doc.image(cell.image, cursor + padX, imageY, {
+          fit: [w - 2 * padX, fitH],
+          align: 'center', valign: cell.imageAfter !== undefined ? 'center' : 'top',
         })
       } catch {
         // Tanda tangan tidak boleh menggagalkan dokumen.
@@ -271,24 +330,28 @@ function drawSectionTitle(doc, y, title, height, indent) {
 }
 
 function drawHeader(doc, { form, addressee, letterNumber, dateText, previewMode }) {
-  let y = PAGE_MARGIN_Y + 7
+  const headerTop = PAGE_MARGIN_TOP
   if (existsSync(LOGO_PATH)) {
     try {
-      doc.image(LOGO_PATH, MARGIN, y, { width: LOGO_W, height: LOGO_H })
+      doc.image(LOGO_PATH, MARGIN, headerTop, { width: LOGO_W, height: LOGO_H })
     } catch {
       // Logo opsional.
     }
   }
-  y += LOGO_H + 1.6
+  // Blok alamat mulai sejajar dengan bagian atas logo, seperti sampel.
+  let y = headerTop
 
-  // Empat baris alamat rata kanan, 9 pt regular, jarak 12 pt (line 240 twips).
-  const block = [`Semarang, ${dateText}`, 'Kepada Yth. :', ...addressee]
+  // Blok alamat rata kiri seperti sampel: tanggal, baris kosong, lalu tujuan surat.
+  const block = [`Semarang, ${dateText}`, '', 'Kepada Yth. :', ...addressee]
+  const headerWidth = TEXT_W - (HEADER_X - MARGIN)
   for (const line of block) {
-    drawText(doc, line, MARGIN, y, { size: 9, width: TEXT_W, align: 'right' })
-    y += 12
+    if (line) {
+      drawText(doc, line, HEADER_X, y, { size: 9, width: headerWidth, align: 'left' })
+    }
+    y += HEADER_LINE
   }
   if (previewMode) {
-    drawText(doc, 'PRATINJAU', MARGIN, y, { size: 7, width: TEXT_W, align: 'right', color: '#666666' })
+    drawText(doc, 'PRATINJAU', HEADER_X, y, { size: 7, width: headerWidth, align: 'left', color: '#666666' })
     y += 10
   }
 
@@ -311,7 +374,7 @@ function dataPegawai(doc, y, { form, request }) {
     : request.employee_position_name
   const unit = form.unitLabelValue || request.employee_unit_name
 
-  y = drawSectionTitle(doc, y, 'I. DATA  PEGAWAI', 14.75, 30.6)
+  y = drawSectionTitle(doc, y, 'I. DATA  PEGAWAI', 14.75, PAD)
   y = drawRow(doc, y, [
     { w: cols[0], text: 'Nama', size: 9 },
     { w: cols[1], text: request.employee_name || '', size: 9 },
@@ -332,7 +395,7 @@ function dataPegawai(doc, y, { form, request }) {
 }
 
 function jenisCuti(doc, y, { form, leaveTypeCode }) {
-  y = drawSectionTitle(doc, y, 'II. JENIS CUTI YANG DIAMBIL', 16.55, 26.1)
+  y = drawSectionTitle(doc, y, 'II. JENIS CUTI YANG DIAMBIL', 16.55, PAD)
   const cols = [214, 52, 235, 52.5]
   const types = form.leaveTypes
   for (let index = 0; index < types.length; index += 2) {
@@ -349,14 +412,14 @@ function jenisCuti(doc, y, { form, leaveTypeCode }) {
 }
 
 function alasanCuti(doc, y, reason) {
-  y = drawSectionTitle(doc, y, 'III. ALASAN CUTI', 15.4, 26.1)
+  y = drawSectionTitle(doc, y, 'III. ALASAN CUTI', 15.4, PAD)
   return drawRow(doc, y, [{ w: CONTENT_W, text: reason || '', size: 9 }], { height: 17.2 })
 }
 
 function lamanyaCuti(doc, y, request) {
   const start = longDate(request.start_date_text || request.start_date)
   const end = longDate(request.end_date_text || request.end_date)
-  y = drawSectionTitle(doc, y, 'IV. LAMANYA CUTI', 16.95, 26.1)
+  y = drawSectionTitle(doc, y, 'IV. LAMANYA CUTI', 16.95, PAD)
   return drawRow(doc, y, [
     { w: 48, text: 'Selama', size: 9 },
     { w: 149, text: `${request.approved_working_days ?? request.requested_working_days ?? 0} hari`, size: 9 },
@@ -368,7 +431,7 @@ function lamanyaCuti(doc, y, request) {
 }
 
 function catatanCuti(doc, y, { form, balances, year }) {
-  y = drawSectionTitle(doc, y, 'V. CATATAN  CUTI', 13.7, 21.6)
+  y = drawSectionTitle(doc, y, 'V. CATATAN  CUTI', 13.7, PAD)
   const widths = [61, 60, 71, 254, 107.5]
   const right = form.catatanRight
   y = drawRow(doc, y, [
@@ -397,12 +460,13 @@ function catatanCuti(doc, y, { form, balances, year }) {
 }
 
 function alamatCuti(doc, y, { request, employeeSignature }) {
-  const cols = [206, 110, 237.5]
-  y = drawSectionTitle(doc, y, 'VI. ALAMAT SELAMA MENJALANKAN CUTI', 9.65, 26.1)
+  const cols = [196, 100, 257.5]
+  y = drawSectionTitle(doc, y, 'VI. ALAMAT SELAMA MENJALANKAN CUTI', 9.65, PAD)
+  const headTop = y
   y = drawRow(doc, y, [
     { w: cols[0], text: 'Alamat Lengkap', size: 9, align: 'center' },
     { w: cols[1], text: 'Telepon', size: 9, align: 'center' },
-    { w: cols[2], text: 'Hormat Saya,……………', size: 9, align: 'center' },
+    { w: cols[2], text: 'Hormat Saya,', size: 9, align: 'center', border: false },
   ], { height: 9.1 })
   const nameY = y
   y = drawRow(doc, y, [
@@ -411,12 +475,18 @@ function alamatCuti(doc, y, { request, employeeSignature }) {
     {
       w: cols[2],
       image: employeeSignature,
+      imageHeight: 34,
       text: request.employee_name || '',
       size: 9,
       align: 'center',
-      minH: 34.15,
+      minH: 44,
+      bottomPad: 4,
+      border: false,
     },
-  ], { height: 34.15 })
+  ], { height: 44 })
+  // Satu kolom utuh: "Hormat Saya", tanda tangan, dan nama tanpa garis pemisah.
+  doc.rect(TABLE_X + cols[0] + cols[1], headTop, cols[2], y - headTop)
+    .strokeColor(LINE).lineWidth(0.7).stroke()
   return { y, nameY }
 }
 
@@ -426,31 +496,37 @@ function decisionCheck(decision) {
   return ''
 }
 
-function pertimbangan(doc, y, { form, approvals, signatureImages, notes }) {
+function pertimbangan(doc, y, { form, approvals, signatureImages, notes, decision }) {
   const config = form.pertimbangan
-  y = drawSectionTitle(doc, y, `VII. ${config.title}`, 12.45, 30.6)
+  y = drawSectionTitle(doc, y, `VII. ${config.title}`, 12.45, PAD)
 
   const kasubag = approvals.find(row => row.actor_role_code === 'KASUBAG')
-  const mark = decisionCheck(kasubag?.decision)
+  // Tahap pertimbangan hanya menyimpan catatan; centang mengikuti keputusan akhir sistem.
+  const finalDecision = [...approvals].reverse().find(row => row.action === 'DECIDE' && row.decision)
+  const mark = decisionCheck(finalDecision?.decision || decision)
   const options = ['DISETUJUI', 'PERUBAHAN', 'DITANGGUHKAN', 'TIDAK DISETUJUI']
+  // Sampel mencantumkan label "CATATAN :" pada kedua sel, dengan satu baris kosong di bawahnya.
+  const noteText = kasubag?.notes ? `CATATAN :\n${kasubag.notes}` : 'CATATAN :'
 
   if (config.kind === 'split') {
-    const cols = [249, 64, 78, 99, 63.5]
+    const cols = [223.5, 64, 78, 96, 92]
     y = drawRow(doc, y, [
-      { w: cols[0], text: config.leftLabel, bold: true, size: 9, align: 'center' },
-      ...options.map((label, index) => ({ w: cols[index + 1], text: label, bold: true, size: 9, align: 'left' })),
+      { w: cols[0], text: config.leftLabel, size: 9, align: 'center' },
+      ...options.map((label, index) => ({
+        w: cols[index + 1], text: label, size: 9, align: 'left', cb: label === mark,
+      })),
     ], { height: 12.45 })
     y = drawRow(doc, y, [
       { w: cols[0], text: '', size: 9 },
-      { w: CONTENT_W - cols[0], text: config.rightLabel, bold: true, size: 9, align: 'center' },
+      { w: CONTENT_W - cols[0], text: config.rightLabel, size: 9, align: 'center' },
     ], { height: 12.45 })
     y = drawRow(doc, y, [
-      { w: cols[0], text: 'CATATAN :', bold: true, size: 9 },
-      { w: CONTENT_W - cols[0], text: kasubag?.notes || '', bold: true, size: 9 },
-    ], { height: 12.45 })
+      { w: cols[0], text: 'CATATAN :', size: 9 },
+      { w: CONTENT_W - cols[0], text: noteText, size: 9 },
+    ], { height: 24 })
     const signer = OFFICIALS[config.rightSigner]
     y = drawRow(doc, y, [
-      { w: cols[0], text: 'NAMA & TTD :', bold: true, size: 9 },
+      { w: cols[0], text: 'NAMA & TTD :', size: 9 },
       {
         w: CONTENT_W - cols[0],
         lines: signer?.lines,
@@ -458,50 +534,64 @@ function pertimbangan(doc, y, { form, approvals, signatureImages, notes }) {
         lineSize: 9,
         align: 'center',
         image: signatureImages.get(config.rightSigner),
-        minH: 42,
+        imageHeight: 40,
+        imageAfter: signer?.imageAfter ?? 1,
+        minH: 54,
+        bottomPad: 6,
       },
-    ], { height: 12.45 })
+    ], { height: 54 })
     return y
   }
 
-  const half = CONTENT_W / 2
+  const leftW = 210
+  const rightW = CONTENT_W - leftW
   y = drawRow(doc, y, [
-    { w: half, text: config.leftLabel, bold: true, size: 9, align: 'center' },
-    { w: half, text: config.rightLabel, bold: true, size: 9, align: 'center' },
+    { w: leftW, text: config.leftLabel, size: 9, align: 'center' },
+    { w: rightW, text: config.rightLabel, size: 9, align: 'center' },
   ], { height: 12.45 })
+  const optionW = CONTENT_W / options.length
+  y = drawRow(doc, y, options.map((label) => ({
+    w: optionW, text: label, size: 9, align: 'center', cb: label === mark,
+  })), { height: 12.45 })
   y = drawRow(doc, y, [
-    { w: half, text: 'CATATAN :', bold: true, size: 9 },
-    { w: half, text: kasubag?.notes || '', bold: true, size: 9 },
-  ], { height: 12.45 })
+    { w: leftW, text: 'CATATAN :', size: 9 },
+    { w: rightW, text: noteText, size: 9 },
+  ], { height: 24 })
   const signer = config.rightSigner ? OFFICIALS[config.rightSigner] : null
   y = drawRow(doc, y, [
-    { w: half, text: 'NAMA & TTD :', bold: true, size: 9 },
+    { w: leftW, text: 'NAMA & TTD :', size: 9 },
     {
-      w: half,
+      w: rightW,
       lines: signer?.lines,
+      text: signer ? undefined : 'NAMA & TTD :',
       size: 9,
       lineSize: 9,
       align: 'center',
       image: config.rightSigner ? signatureImages.get(config.rightSigner) : null,
-      minH: 42,
+      imageHeight: 40,
+      imageAfter: signer?.imageAfter ?? 1,
+      minH: 54,
+      bottomPad: 6,
     },
-  ], { height: 12.45 })
+  ], { height: 54 })
   return y
 }
 
 function keputusan(doc, y, { form, request, approvals, signatureImages }) {
   const options = ['DISETUJUI', 'PERUBAHAN', 'DITANGGUHKAN', 'TIDAK DISETUJUI']
-  const cols = [78, 92, 99, 85, 199.5]
-  y = drawSectionTitle(doc, y, 'VIII. KEPUTUSAN PEJABAT YANG BERWENANG MEMBERIKAN CUTI', 13.75, 21.6)
+  const cols = [68, 79, 96, 66.5, 244]
+  y = drawSectionTitle(doc, y, 'VIII. KEPUTUSAN PEJABAT YANG BERWENANG MEMBERIKAN CUTI', 13.75, PAD)
 
   const finalDecision = [...approvals].reverse().find(row => row.action === 'DECIDE' && row.decision)
   const chosen = finalDecision?.decision || request.decision
   const mark = decisionCheck(chosen)
 
   y = drawRow(doc, y, [
-    ...options.map((label, index) => ({ w: cols[index], text: label, size: 9, align: 'center', cb: label === mark })),
-    { w: cols[4], text: form.decisionLabel, size: 9, align: 'center' },
-  ], { height: 13.75 })
+    ...options.map((label, index) => ({
+      w: cols[index], text: label, size: 9, align: 'center', center: true, cb: label === mark,
+    })),
+    { w: cols[4], text: form.decisionLabel, size: 9, align: 'center', center: true },
+  ], { height: 30 })
 
   const signer = OFFICIALS[form.decisionSigner]
   y = drawRow(doc, y, [
@@ -513,9 +603,12 @@ function keputusan(doc, y, { form, request, approvals, signatureImages }) {
       lineSize: 9,
       align: 'center',
       image: signatureImages.get(form.decisionSigner),
-      minH: 42,
+      imageHeight: 40,
+      imageAfter: signer?.imageAfter ?? 1,
+      minH: 54,
+      bottomPad: 6,
     },
-  ], { height: 14.65 })
+  ], { height: 54 })
   return y
 }
 
@@ -525,7 +618,7 @@ function footer(doc, y) {
       'Pengajuan/penggunaan cuti tahunan, cuti besar, cuti karena alasan penting, atau cuti bersama dapat '
       + 'ditangguhkan/ditunda apabila terdapat kepentingan dinas yang mendesak sesuai ketentuan PP Nomor 11 Tahun 2017, '
       + 'PP Nomor 17 Tahun 2020 dan Peraturan BKN Nomor 7 Tahun 2022.',
-      TABLE_X, y, { size: 9, width: CONTENT_W - 90, align: 'justify' },
+      TABLE_X, y, { size: 9, width: CONTENT_W, align: 'justify' },
     )
   } catch {
     // Catatan kaki opsional.
@@ -537,8 +630,6 @@ export async function generateLeavePdf({
   approvals = [],
   signatures = [],
   balances = [],
-  verificationUrl = '',
-  documentHash = '',
   letterNumber = '',
   previewMode = false,
   signatureImageLoader = null,
@@ -566,7 +657,7 @@ export async function generateLeavePdf({
 
   const doc = new PDFDocument({
     size: [PAGE_W, 841.89],
-    margin: { top: PAGE_MARGIN_Y, bottom: PAGE_MARGIN_Y, left: MARGIN, right: MARGIN },
+    margin: { top: PAGE_MARGIN_TOP, bottom: PAGE_MARGIN_Y, left: MARGIN, right: MARGIN },
     info: { Title: 'Formulir Permintaan dan Pemberian Cuti', Author: 'Sistem Pengajuan Cuti' },
   })
   if (HAS_FONT) {
@@ -589,33 +680,26 @@ export async function generateLeavePdf({
   })
 
   y = dataPegawai(doc, y, { form, request })
+  y += SECTION_GAP
   y = jenisCuti(doc, y, { form, leaveTypeCode: request.leave_type_code })
+  y += SECTION_GAP
   y = alasanCuti(doc, y, request.reason)
+  y += SECTION_GAP
   y = lamanyaCuti(doc, y, request)
+  y += SECTION_GAP
   y = catatanCuti(doc, y, { form, balances, year })
+  y += SECTION_GAP
   const alamat = alamatCuti(doc, y, { request, employeeSignature: employeeSignatureImage })
   y = alamat.y
-  y = pertimbangan(doc, y, { form, approvals, signatureImages, notes: request.reason })
+  y += SECTION_GAP
+  y = pertimbangan(doc, y, {
+    form, approvals, signatureImages, notes: request.reason, decision: request.decision,
+  })
+  y += SECTION_GAP
   y = keputusan(doc, y, { form, request, approvals, signatureImages })
-  const bandY = Math.min(y + 6, 770)
+  // Beri jarak dari garis tabel bawah.
+  const bandY = y + 12
   footer(doc, bandY)
-
-  if (verificationUrl) {
-    try {
-      const qr = await QRCode.toBuffer(verificationUrl, { type: 'png', margin: 0, width: 96 })
-      const qrSize = 52
-      const qrX = TABLE_X + CONTENT_W - qrSize
-      doc.image(qr, qrX, bandY, { width: qrSize, height: qrSize })
-      doc.font(FONT).fontSize(5.5).fillColor('#444444')
-        .text('Verifikasi dokumen', qrX - 18, bandY + qrSize + 1, { width: qrSize + 36, align: 'center' })
-    } catch {
-      // QR opsional.
-    }
-  }
-  if (documentHash) {
-    doc.font(FONT).fontSize(5).fillColor('#777777')
-      .text(`Hash: ${documentHash}`, MARGIN, bandY + 36, { width: CONTENT_W - 90 })
-  }
 
   doc.end()
   return done

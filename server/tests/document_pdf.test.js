@@ -28,7 +28,6 @@ test('generateLeavePdf menghasilkan PDF satu halaman dengan font Gotham', async 
     approvals: [{ action: 'DECIDE', decision: 'APPROVED' }],
     letterNumber: '0001/KP.09.02/II.3/XII/2026',
     verificationUrl: 'https://cuti.internal/verifikasi/abc123',
-    documentHash: 'a'.repeat(64),
   })
   assert.ok(Buffer.isBuffer(pdf))
   assert.equal(pdf.slice(0, 5).toString(), '%PDF-')

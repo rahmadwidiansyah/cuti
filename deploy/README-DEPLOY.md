@@ -69,7 +69,9 @@ Contoh untuk lingkungan demo:
 VITE_SHOW_DEMO_LOGIN=true SEED_DEMO_ACCOUNTS=true docker compose up -d --build
 ```
 
-Karena `VITE_SHOW_DEMO_LOGIN` dipakai saat build, **image harus di-build ulang** setelah mengubahnya. Di produksi biarkan keduanya `false` agar kredensial demo tidak terekspos.
+Karena `VITE_SHOW_DEMO_LOGIN` dipakai saat build, **image harus di-build ulang** setelah mengubahnya. Workflow CI (`.github/workflows/ci.yml`) sudah meneruskan build-arg ini ke image GHCR, dengan nilai bawaan `true`. Nilai bawaan bisa ditimpa lewat GitHub Actions variable repository `VITE_SHOW_DEMO_LOGIN`. Untuk produksi, set variable itu ke `false` agar kredensial demo tidak terekspos.
+
+Image hasil CI juga perlu `SEED_DEMO_ACCOUNTS=true` saat container dijalankan supaya akun-akun demo tersedia di database.
 
 ## 3. Siapkan direktori penyimpanan
 
@@ -117,7 +119,7 @@ Untuk memeriksa ulang secara manual:
 
 ```bash
 docker build --target verify -t cuti-app:verify .
-docker build --target app -t cuti-app:local .
+docker build --target app --build-arg VITE_SHOW_DEMO_LOGIN=true -t cuti-app:local .
 
 docker run --rm cuti-app:local sh -c '
   du -sh node_modules
