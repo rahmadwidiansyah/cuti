@@ -47,7 +47,7 @@ const approvalCounts = reactive({
   forward: 0, final: 0, overdue: 0, today: 0, leaveTypes: 0, units: 0,
 })
 const approvalItems = ref([])
-const isDevelopment = import.meta.env.DEV
+const isDevelopment = import.meta.env.DEV || import.meta.env.VITE_SHOW_DEMO_LOGIN === 'true'
 const view = ref('login')
 
 // Topbar & sidebar (desain FigCraft)

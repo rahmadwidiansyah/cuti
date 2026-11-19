@@ -53,6 +53,24 @@ Isi `DATABASE_URL` atau pasangan `DB_*`. `APP_PORT` sudah bernilai `3989`.
 
 Alamat database harus bisa dijangkau dari dalam container. `127.0.0.1` di dalam container menunjuk ke container itu sendiri, bukan ke host.
 
+### Tombol login demo (auto-isi akun)
+
+Tombol floating di halaman login **sengaja nonaktif di image produksi**. Dua variabel di `.env` mengaturnya:
+
+| Variabel | Dipakai saat | Fungsi |
+|---|---|---|
+| `VITE_SHOW_DEMO_LOGIN=true` | build image | Menyertakan tombol di bundle frontend |
+| `SEED_DEMO_ACCOUNTS=true` | container start | Membuat 10 akun demo bila belum ada (idempoten) |
+| `DEMO_PASSWORD` | seed | Kata sandi demo, bawaan `Cuti123!` |
+
+Contoh untuk lingkungan demo:
+
+```bash
+VITE_SHOW_DEMO_LOGIN=true SEED_DEMO_ACCOUNTS=true docker compose up -d --build
+```
+
+Karena `VITE_SHOW_DEMO_LOGIN` dipakai saat build, **image harus di-build ulang** setelah mengubahnya. Di produksi biarkan keduanya `false` agar kredensial demo tidak terekspos.
+
 ## 3. Siapkan direktori penyimpanan
 
 Node berjalan sebagai user `node` dengan uid 1000, jadi direktori harus bisa ditulis:

@@ -6,9 +6,13 @@ services:
       context: ..
       dockerfile: Dockerfile
       target: app
+      args:
+        VITE_SHOW_DEMO_LOGIN: ${VITE_SHOW_DEMO_LOGIN:-false}
     image: cuti-app:local
     env_file:
       - .env
+    environment:
+      SEED_DEMO_ACCOUNTS: ${SEED_DEMO_ACCOUNTS:-false}
     restart: unless-stopped
     init: true
     ports:

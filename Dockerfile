@@ -10,6 +10,8 @@ RUN --mount=type=cache,target=/root/.npm \
 
 # Stage 2: build aset frontend.
 FROM node:24-alpine AS build
+ARG VITE_SHOW_DEMO_LOGIN=false
+ENV VITE_SHOW_DEMO_LOGIN=${VITE_SHOW_DEMO_LOGIN}
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
