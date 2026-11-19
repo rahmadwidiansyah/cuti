@@ -2,6 +2,28 @@
 
 MVP internal TU Digital dengan Vue 3, Vite, Express, dan PostgreSQL. Fitur yang tersedia: dashboard pegawai, pengajuan cuti dengan pratinjau hari kerja, riwayat dan detail pengajuan, antrean reviewer, tanda tangan internal reviewer, direktori pegawai dengan filter unit, kategori, dan status cuti, serta halaman Admin untuk melihat dan menyesuaikan kuota cuti tahunan pegawai.
 
+## Tech stack
+
+| Bagian | Teknologi | Versi | Kegunaan |
+|---|---|---|---|
+| Frontend | Vue 3 | ^3.5.44 | UI reaktif dan komponen halaman |
+| Frontend | Vite | ^8.3.6 | Dev server dan build aset produksi |
+| Frontend | @vitejs/plugin-vue | ^6.0.10 | Kompilasi Single File Component Vue |
+| Frontend | lucide-vue-next | ^1.0.0 | Pustaka ikon |
+| Backend | Node.js | 24 | Runtime API (ES modules) |
+| Backend | Express | ^5.1.0 | REST API dan routing |
+| Backend | Multer | ^2.0.2 | Unggahan lampiran, avatar, dan tanda tangan |
+| Backend | file-type | ^21.0.0 | Validasi magic byte berkas unggahan |
+| Backend | PDFKit | ^0.20.2 | Pembuatan formulir PDF final dan pratinjau |
+| Backend | qrcode | ^1.5.4 | QR verifikasi dokumen |
+| Database | PostgreSQL | - | Schema `cuti`, migrasi otomatis saat API start |
+| Database | `pg` | ^8.16.3 | Driver PostgreSQL |
+| Font PDF | Gotham Light | - | Font tertanam di dokumen hasil (OTF) |
+| Testing | node:test | bawaan Node | 45 tes unit dan integrasi |
+| Dev tooling | concurrently | ^10.0.7 | Menjalankan API dan Vite bersamaan |
+| Deployment | Docker + nginx | - | Satu image berisi frontend statis dan API |
+| Deployment | Cloudflare Tunnel | - | Publikasi HTTPS tanpa port terbuka |
+
 ## Menjalankan aplikasi
 
 1. Pastikan database PostgreSQL sudah berisi schema `cuti` dan data referensi yang diperlukan. Skema dibuat dari `Database/001_schema.sql`.
