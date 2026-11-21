@@ -50,7 +50,10 @@ const approvalCounts = reactive({
   forward: 0, final: 0, overdue: 0, today: 0, leaveTypes: 0, units: 0,
 })
 const approvalItems = ref([])
-const isDevelopment = import.meta.env.DEV || import.meta.env.VITE_SHOW_DEMO_LOGIN === 'true'
+// VITE_USER_NODE_ENV berasal dari NODE_ENV di .env; daftar akun demo hanya
+// tampil saat NODE_ENV=local. VITE_SHOW_DEMO_LOGIN tetap dipakai untuk build demo.
+const isDevelopment = import.meta.env.VITE_USER_NODE_ENV === 'local'
+  || import.meta.env.VITE_SHOW_DEMO_LOGIN === 'true'
 const view = ref('login')
 
 // Topbar & sidebar (desain FigCraft)
