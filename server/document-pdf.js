@@ -2,10 +2,11 @@ import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import PDFDocument from 'pdfkit'
+import { PDFDocument as PDFLibDocument, StandardFonts, rgb } from 'pdf-lib'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-export const DOCUMENT_TEMPLATE_VERSION = '2026-11-form-exact5'
+export const DOCUMENT_TEMPLATE_VERSION = '2026-11-form-exact5-attachments1'
 const FONT_PATH = resolve(__dirname, 'assets/fonts/Gotham-Light.otf')
 const HAS_FONT = existsSync(FONT_PATH)
 const FONT = HAS_FONT ? 'GothamLight' : 'Helvetica'
@@ -220,6 +221,22 @@ function drawText(doc, value, x, y, { bold = false, size = 9, width, align = 'le
   }
 }
 
+export function cancellationLabel(status) {
+  if (status === 'CANCELLED') return 'DIBATALKAN'
+  if (status === 'WITHDRAWN') return 'DITARIK'
+  return null
+}
+
+function drawStamp(doc, x, y, text) {
+  const w = 92
+  const h = 18
+  doc.save()
+  doc.roundedRect(x, y, w, h, 4).strokeColor('#B42318').lineWidth(1.2).stroke()
+  doc.font(FONT).fontSize(9).fillColor('#B42318')
+    .text(text, x, y + 4, { width: w, align: 'center' })
+  doc.restore()
+}
+
 function drawRow(doc, y, cells, { height = 14, size = 9, x = TABLE_X } = {}) {
   const widths = cells.reduce((sum, cell) => sum + cell.w, 0)
   const scale = Math.abs(widths - CONTENT_W) < 0.5 ? 1 : CONTENT_W / widths
@@ -329,7 +346,7 @@ function drawSectionTitle(doc, y, title, height, indent) {
   ], { height })
 }
 
-function drawHeader(doc, { form, addressee, letterNumber, dateText, previewMode }) {
+function drawHeader(doc, { form, addressee, letterNumber, dateText, previewMode, cancellation }) {
   const headerTop = PAGE_MARGIN_TOP
   if (existsSync(LOGO_PATH)) {
     try {
@@ -357,6 +374,7 @@ function drawHeader(doc, { form, addressee, letterNumber, dateText, previewMode 
 
   y += 4
   const titleSize = form.titleSize || 12
+  const titleY = y
   drawText(doc, 'FORMULIR PERMINTAAN DAN PEMBERIAN CUTI', MARGIN, y, {
     size: titleSize, width: TEXT_W, align: 'center',
   })
@@ -364,6 +382,9 @@ function drawHeader(doc, { form, addressee, letterNumber, dateText, previewMode 
   drawText(doc, `Nomor : ${letterNumber}`, MARGIN, y, {
     size: titleSize, width: TEXT_W, align: 'center',
   })
+  if (cancellation) {
+    drawStamp(doc, TABLE_X, titleY - 2, cancellation)
+  }
   return y + titleSize + 10
 }
 
@@ -625,6 +646,74 @@ function footer(doc, y) {
   }
 }
 
+function attachmentFilename(value) {
+  // Standard font pdf-lib hanya mendukung WinAnsi; ganti karakter di luar itu.
+  return String(value || 'lampiran').replace(/[^\x20-\xff]/g, '?')
+}
+
+async function appendAttachments(pdf, attachments, attachmentLoader) {
+  const output = await PDFLibDocument.load(pdf, { ignoreEncryption: true })
+  const font = await output.embedFont(StandardFonts.Helvetica)
+  const pageWidth = PAGE_W
+  const pageHeight = 841.89
+  for (const [index, attachment] of attachments.entries()) {
+    const buffer = await attachmentLoader(attachment).catch(() => null)
+    const label = `Lampiran ${index + 1}: ${attachmentFilename(attachment.original_filename)}`
+    if (!buffer) continue
+
+    if (attachment.detected_mime === 'application/pdf') {
+      let source = null
+      try {
+        source = await PDFLibDocument.load(buffer, { ignoreEncryption: true })
+      } catch {
+        source = null
+      }
+      if (source) {
+        const pages = await output.copyPages(source, source.getPageIndices())
+        pages.forEach((page, pageIndex) => {
+          output.addPage(page)
+          page.drawText(`${label} (${pageIndex + 1}/${pages.length})`, {
+            x: 24, y: 14, size: 7, font, color: rgb(0.35, 0.35, 0.35),
+          })
+        })
+        continue
+      }
+    }
+
+    const page = output.addPage([pageWidth, pageHeight])
+    page.drawText(label, {
+      x: 36, y: pageHeight - 40, size: 9, font, color: rgb(0.1, 0.1, 0.1),
+    })
+    let image = null
+    try {
+      if (attachment.detected_mime === 'image/jpeg') image = await output.embedJpg(buffer)
+      else if (attachment.detected_mime === 'image/png') image = await output.embedPng(buffer)
+    } catch {
+      image = null
+    }
+    if (!image) {
+      page.drawText('Lampiran tidak dapat ditampilkan.', {
+        x: 36, y: pageHeight - 64, size: 9, font, color: rgb(0.5, 0, 0),
+      })
+      continue
+    }
+    const maxWidth = pageWidth - 72
+    const contentTop = pageHeight - 72
+    const contentBottom = 48
+    const maxHeight = contentTop - contentBottom
+    const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1)
+    const width = image.width * scale
+    const height = image.height * scale
+    page.drawImage(image, {
+      x: (pageWidth - width) / 2,
+      y: contentBottom + (maxHeight - height) / 2,
+      width,
+      height,
+    })
+  }
+  return Buffer.from(await output.save())
+}
+
 export async function generateLeavePdf({
   request,
   approvals = [],
@@ -634,6 +723,8 @@ export async function generateLeavePdf({
   previewMode = false,
   signatureImageLoader = null,
   employeeSignature = null,
+  attachments = [],
+  attachmentLoader = null,
 }) {
   const form = FORMS[request.employee_category] || FORMS.PNS_TU
   const year = Number(String(isoDate(request.start_date_text || request.start_date)).slice(0, 4))
@@ -677,6 +768,7 @@ export async function generateLeavePdf({
     letterNumber: formatNomor(letterNumber, request.start_date_text || request.start_date),
     dateText: dateText || `${new Date().getDate()} ${MONTHS_ID[new Date().getMonth()]} ${new Date().getFullYear()}`,
     previewMode,
+    cancellation: cancellationLabel(request.status),
   })
 
   y = dataPegawai(doc, y, { form, request })
@@ -702,5 +794,9 @@ export async function generateLeavePdf({
   footer(doc, bandY)
 
   doc.end()
-  return done
+  const pdf = await done
+  if (attachments.length && attachmentLoader) {
+    return appendAttachments(pdf, attachments, attachmentLoader)
+  }
+  return pdf
 }

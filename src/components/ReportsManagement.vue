@@ -1,7 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { CheckCircle2, Clock3, FileText, Info, RotateCcw } from 'lucide-vue-next'
-import { downloadPdf } from '../download.js'
 import DatePicker from './DatePicker.vue'
 
 const filters = reactive({
@@ -95,34 +94,6 @@ const queryParams = computed(() => {
   return params.toString()
 })
 
-const exportHref = computed(() => {
-  const base = '/api/admin/reports/leaves.xls'
-  return queryParams.value ? `${base}?${queryParams.value}` : base
-})
-
-const pdfHref = computed(() => {
-  const base = '/api/admin/reports/leaves.pdf'
-  return queryParams.value ? `${base}?${queryParams.value}` : base
-})
-
-function openExport() {
-  const link = document.createElement('a')
-  link.href = exportHref.value
-  link.download = 'laporan-cuti.xls'
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-}
-
-async function downloadPdfReport() {
-  error.value = ''
-  try {
-    await downloadPdf(pdfHref.value, 'laporan-cuti.pdf')
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : 'Gagal mengunduh laporan PDF.'
-  }
-}
-
 async function loadData() {
   loading.value = true
   error.value = ''
@@ -154,8 +125,6 @@ onMounted(() => {
   Object.assign(draft, filters)
   loadData()
 })
-
-defineExpose({ openExport, downloadPdf: downloadPdfReport })
 </script>
 
 <template>
@@ -186,7 +155,7 @@ defineExpose({ openExport, downloadPdf: downloadPdfReport })
         </select>
       </label>
       <button class="button button-primary rp-apply" type="submit">Terapkan</button>
-      <button class="rp-reset" type="button" @click="resetFilters">Reset</button>
+      <button class="button button-quiet rp-reset" type="button" @click="resetFilters">Reset</button>
     </form>
 
     <template v-if="data && !loading">
@@ -284,68 +253,60 @@ defineExpose({ openExport, downloadPdf: downloadPdfReport })
 
 <style scoped>
 .report-page {
-  --ink: #142f3a; --text: #3d525c; --muted: #5a6f78;
-  --border: #e1e9f1; --divider: #edf2f7;
   display: grid; gap: 20px; min-width: 0;
 }
-.rp-error { margin: 0; padding: 12px 16px; border-radius: 10px; background: #fde9e9; color: #a11d1d; font-size: 13px; }
+.rp-error { margin: 0; padding: 12px 14px; border: 1px solid var(--danger-border); border-radius: var(--radius-control); background: var(--danger-bg); color: var(--danger-text); font-size: 13px; }
 .rp-loading { margin: 0; color: var(--muted); font-size: 13px; }
 
 .rp-filters {
   display: flex; align-items: center; gap: 12px;
-  padding: 12px 20px; border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--subtle);
 }
 .rp-filters > label:not(.sr-only) { position: relative; min-width: 0; }
 .rp-date { flex: 0 0 160px; width: 160px; }
 .rp-select select {
   width: 160px; height: 40px; padding: 0 10px;
-  border: 1px solid #8494a1; border-radius: 8px;
-  background: #fff; color: var(--text); font-size: 13px; cursor: pointer;
+  border: 1px solid var(--control-border); border-radius: var(--radius-control);
+  background: var(--card); color: var(--text); font-size: 13px; cursor: pointer;
 }
 .rp-apply { min-width: 96px; height: 40px; min-height: 40px; }
-.rp-reset {
-  min-width: 72px; height: 40px; padding: 0 8px;
-  border: 0; border-radius: 8px; background: transparent;
-  color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer;
-}
-.rp-reset:hover { background: var(--divider); color: var(--ink); }
-.rp-reset:focus-visible { outline: 2px solid #0d6efd; outline-offset: 2px; }
+.rp-reset { min-width: 72px; }
 
 .rp-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .rp-metric {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
-  min-height: 96px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  min-height: 96px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card);
 }
 .rp-metric p { margin: 0 0 4px; color: var(--muted); font-size: 10.5px; font-weight: 500; }
-.rp-metric strong { color: var(--ink); font-size: 26px; font-weight: 700; line-height: 1.15; }
+.rp-metric strong { color: var(--ink); font-size: 26px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
 .rp-metric strong span { color: var(--muted); font-size: 10.5px; font-weight: 500; }
 .rp-metric-icon { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
-.tone-blue { background: #e9f1ff; color: #1b4fbf; }
-.tone-green { background: #e4f7ec; color: #0b6b45; }
-.tone-red { background: #fde9e9; color: #a11d1d; }
-.tone-teal { background: #e3f4f1; color: #0a6b60; }
+.tone-blue { background: var(--info-bg); color: var(--info-text); }
+.tone-green { background: var(--success-bg); color: var(--success-text); }
+.tone-red { background: var(--danger-bg); color: var(--danger-text); }
+.tone-teal { background: var(--teal-bg); color: var(--teal-text); }
 
 .rp-overview { display: grid; grid-template-columns: minmax(0, 716fr) minmax(0, 392fr); gap: 20px; align-items: start; }
-.rp-panel { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+.rp-panel { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card); }
 .rp-unit, .rp-composition { min-height: 300px; }
 .rp-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.rp-panel-heading h2 { margin: 0 0 4px; color: var(--ink); font-size: 14px; font-weight: 600; }
+.rp-panel-heading h2 { margin: 0 0 4px; color: var(--ink); font-size: 16px; font-weight: 600; }
 .rp-panel-heading p { margin: 0; color: var(--muted); font-size: 10px; }
 
 .rp-table { width: 100%; border-collapse: collapse; }
 .rp-table th {
   padding: 0 10px 10px; border-bottom: 1px solid var(--border);
-  color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: 0.03em; text-align: left; text-transform: uppercase;
+  color: var(--muted); font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-align: left; text-transform: uppercase;
 }
 .rp-table td {
-  padding: 9px 10px; border-bottom: 1px solid var(--divider);
-  color: var(--text); font-size: 10.5px;
+  padding: 12px 10px; border-bottom: 1px solid var(--divider);
+  color: var(--text); font-size: 12px;
 }
 .rp-table th:first-child, .rp-table td:first-child { padding-left: 0; }
 .rp-table th:last-child, .rp-table td:last-child { padding-right: 0; }
 .rp-total { color: var(--ink); font-weight: 600; }
-.rp-request { color: #0d6efd; font-weight: 600; white-space: nowrap; }
-.rp-restored { color: #0b6b45; font-weight: 700; white-space: nowrap; }
+.rp-request { color: var(--primary); font-weight: 650; white-space: nowrap; }
+.rp-restored { color: var(--success-text); font-weight: 700; white-space: nowrap; }
 .rp-empty { padding: 20px 0; text-align: center; color: var(--muted); }
 .rp-table tfoot td { border-bottom: 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; font-weight: 600; }
 
@@ -354,11 +315,11 @@ defineExpose({ openExport, downloadPdf: downloadPdfReport })
 .rp-compose-label strong { color: var(--ink); font-weight: 600; }
 .rp-progress { height: 7px; border-radius: 4px; background: var(--border); overflow: hidden; }
 .rp-progress span { display: block; height: 100%; border-radius: 4px; }
-.rp-compose-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
-.rp-compose-note { display: flex; align-items: flex-start; gap: 6px; margin: 18px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.rp-compose-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+.rp-compose-note { display: flex; align-items: flex-start; gap: 6px; margin: 18px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .rp-compose-note svg { flex: 0 0 auto; }
 
-@media (max-width: 1180px) {
+@media (max-width: 1200px) {
   .rp-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rp-overview { grid-template-columns: 1fr; }
   .rp-filters { flex-wrap: wrap; }
@@ -366,9 +327,11 @@ defineExpose({ openExport, downloadPdf: downloadPdfReport })
   .rp-cancel .rp-table { min-width: 900px; }
 }
 @media (max-width: 640px) {
-  .rp-metrics { grid-template-columns: 1fr; }
+  .rp-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rp-date, .rp-select, .rp-select select, .rp-apply, .rp-reset { width: 100%; flex: 1 1 100%; }
   .rp-filters { padding: 12px 16px; }
   .rp-date :deep(.dp-input-wrap), .rp-select select, .rp-apply, .rp-reset { height: 44px; min-height: 44px; }
+  .rp-panel { padding: 16px; overflow-x: auto; }
+  .rp-table { min-width: 480px; }
 }
 </style>

@@ -15,6 +15,21 @@ if (!config.connectionString && (!config.host || !config.database || !config.use
   throw new Error('Atur DATABASE_URL atau DB_HOST, DB_DATABASE, dan DB_USERNAME sebelum seed demo.')
 }
 
+// Audit T7: di lingkungan produksi, akun demo hanya boleh dibuat dengan kata
+// sandi kuat yang sengaja dipilih operator — bukan kata sandi publik default —
+// dan tidak boleh menimpa database yang sudah berisi pengguna non-demo.
+const NODE_ENV = process.env.NODE_ENV || ''
+const PUBLIC_DEMO_PASSWORDS = new Set(['Cuti123!', 'demo', 'password', '12345678'])
+const isProduction = NODE_ENV === 'production'
+const requestedPassword = process.env.DEMO_PASSWORD || ''
+if (isProduction && (!requestedPassword || PUBLIC_DEMO_PASSWORDS.has(requestedPassword))) {
+  console.error(
+    '[seed-demo] NODE_ENV=production: setel DEMO_PASSWORD dengan kata sandi kuat ' +
+    'yang tidak publik sebelum menjalankan seed demo (SEED_DEMO_ACCOUNTS=true saja tidak cukup).',
+  )
+  process.exit(1)
+}
+
 const PASSWORD = process.env.DEMO_PASSWORD || 'Cuti123!'
 const pool = new Pool(config)
 
@@ -117,13 +132,31 @@ async function seedAccount(client, account) {
 
 const client = await pool.connect()
 try {
+  // Audit T7: di produksi, tolak bila database sudah berisi pengguna aktif
+  // di luar akun demo (menghindari campur akun demo dengan data nyata).
+  if (isProduction) {
+    const demoUsernames = accounts.map(account => account.username.toLowerCase())
+    const outsider = await client.query(
+      `SELECT count(*)::int AS n FROM cuti.users
+       WHERE is_active AND lower(username) <> ALL($1)`,
+      [demoUsernames],
+    )
+    if (outsider.rows[0].n > 0) {
+      console.error(
+        `[seed-demo] NODE_ENV=production: database sudah berisi ${outsider.rows[0].n} ` +
+        'pengguna aktif non-demo. Seed demo tidak dijalankan.',
+      )
+      process.exit(1)
+    }
+  }
   await client.query('BEGIN')
   for (const account of accounts) {
     await seedAccount(client, account)
     console.log(`[seed-demo] akun siap: ${account.username}`)
   }
   await client.query('COMMIT')
-  console.log(`[seed-demo] selesai. Kata sandi demo: ${PASSWORD}`)
+  // Audit T7: kata sandi tidak pernah dicetak ke log (log kontainer tersimpan).
+  console.log('[seed-demo] selesai. Kata sandi akun demo diambil dari variabel DEMO_PASSWORD.')
 } catch (error) {
   await client.query('ROLLBACK')
   console.error('[seed-demo] gagal:', error.message)

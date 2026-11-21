@@ -8,7 +8,7 @@ const emit = defineEmits(['change'])
 const tabs = [
   { key: 'pending', label: 'Menunggu keputusan', countKey: 'pending' },
   { key: 'approved', label: 'Disetujui', countKey: 'approved' },
-  { key: 'rejected', label: 'Tidak disetujui', countKey: 'rejected' },
+  { key: 'rejected', label: 'Tidak Disetujui', countKey: 'rejected' },
 ]
 </script>
 
@@ -34,7 +34,7 @@ const tabs = [
   display: flex;
   align-items: center;
   gap: 24px;
-  border-bottom: 1px solid #e1e9f1;
+  border-bottom: 1px solid var(--border);
   overflow-x: auto;
 }
 .status-tab {
@@ -43,14 +43,14 @@ const tabs = [
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
-  color: #5a6f78;
+  color: var(--muted);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
 }
 .status-tab span { margin-left: 4px; font-size: 11px; font-weight: 600; }
-.status-tab.active { border-bottom-color: #0d6efd; color: #0d6efd; font-weight: 600; }
-.status-tab.active span { color: #0d6efd; }
-.status-tab:hover:not(.active) { color: #142f3a; }
+.status-tab.active { border-bottom-color: var(--primary); color: var(--primary); font-weight: 600; }
+.status-tab.active span { color: var(--primary); }
+.status-tab:hover:not(.active) { color: var(--ink); }
 </style>

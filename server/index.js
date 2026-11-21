@@ -18,6 +18,13 @@ import { advanceToNextStage, ensureActiveStage } from './approval-stages.js'
 import { generateLeavePdf, DOCUMENT_TEMPLATE_VERSION } from './document-pdf.js'
 import { generateReportPdf } from './report-pdf.js'
 import { runMigrations } from './migrate.js'
+import { createFixedWindowLimiter, createConcurrencyLimiter } from './rate-limit.js'
+
+// Audit S1/R1 (mem blokir alur kirim-ulang): driver pg mengubah kolom DATE
+// menjadi objek Date pada tengah malam zona proses — di WIB, 14 Des menjadi
+// "13 Des 17:00Z" di JSON sehingga frontend membaca mundur satu hari.
+// Kolom DATE diteruskan apa adanya sebagai string "YYYY-MM-DD".
+pg.types.setTypeParser(1082, (value) => value)
 import { validateUpload, LIMITS, UploadValidationError, sanitizeFilename } from './file-validation.js'
 
 const { Pool } = pg
@@ -717,10 +724,69 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
   res.json({ ok: true })
 }))
 
+// Audit T1: throttle login per-IP dan per-IP+username (fixed window in-memory).
+const loginIpLimiter = createFixedWindowLimiter({ limit: 20, windowMs: 10 * 60 * 1000 })
+const loginUsernameLimiter = createFixedWindowLimiter({ limit: 10, windowMs: 10 * 60 * 1000 })
+
+// Audit T8: unggahan multipart menahan sampai ~50 MB buffer di memori per
+// permintaan (multer memoryStorage). Batasi paralel + laju per-IP agar heap
+// tidak bisa digembungkan hingga OOM.
+const uploadConcurrency = createConcurrencyLimiter({ max: 4 })
+const uploadRateLimiter = createFixedWindowLimiter({ limit: 20, windowMs: 10 * 60 * 1000 })
+function guardUpload(req, res, next) {
+  if (!uploadConcurrency.enter(res)) {
+    res.status(503).json({ error: 'Server sedang sibuk memproses unggahan. Coba lagi sebentar.' })
+    return
+  }
+  const check = uploadRateLimiter.take(`upload:${req.ip || 'unknown'}`)
+  if (!check.allowed) {
+    res.setHeader('Retry-After', String(check.retryAfterSeconds))
+    res.status(429).json({ error: 'Terlalu banyak unggahan dari perangkat ini. Coba lagi nanti.' })
+    return
+  }
+  next()
+}
+
+// Audit T8: pembuatan PDF/laporan memakan CPU dan membuffer hasil di memori.
+const heavyExportLimiter = createFixedWindowLimiter({ limit: 30, windowMs: 10 * 60 * 1000 })
+function guardHeavyExport(req, res, next) {
+  const check = heavyExportLimiter.take(`heavy:${req.ip || 'unknown'}`)
+  if (!check.allowed) {
+    res.setHeader('Retry-After', String(check.retryAfterSeconds))
+    res.status(429).json({ error: 'Terlalu banyak permintaan dokumen dari perangkat ini. Coba lagi nanti.' })
+    return
+  }
+  next()
+}
+
 app.post('/api/auth/login', asyncRoute(async (req, res) => {
   const username = String(req.body?.username || '').trim()
   const password = String(req.body?.password || '')
   if (!username || !password) throw new HttpError(400, 'Isi nama pengguna dan kata sandi.')
+
+  const ipKey = `ip:${req.ip || 'unknown'}`
+  const ipCheck = loginIpLimiter.take(ipKey)
+  if (!ipCheck.allowed) {
+    res.setHeader('Retry-After', String(ipCheck.retryAfterSeconds))
+    throw new HttpError(429, 'Terlalu banyak percobaan masuk dari perangkat ini. Coba lagi nanti.')
+  }
+  const usernameCheck = loginUsernameLimiter.take(`${ipKey}:user:${username.toLowerCase()}`)
+  if (!usernameCheck.allowed) {
+    res.setHeader('Retry-After', String(usernameCheck.retryAfterSeconds))
+    throw new HttpError(429, 'Terlalu banyak percobaan masuk untuk akun ini. Coba lagi nanti.')
+  }
+
+  // Catat setiap percobaan ke login_attempts; kegagalan pencatatan tidak boleh menggagalkan login.
+  const recordLoginAttempt = async (userId, isSuccess, failureReason) => {
+    try {
+      await pool.query(
+        `INSERT INTO cuti.login_attempts
+           (username_attempted, user_id, is_success, failure_reason, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5::inet, $6)`,
+        [username.slice(0, 254), userId, isSuccess, failureReason, req.ip || null, req.get('user-agent') || null],
+      )
+    } catch (_) { /* jejak audit login bersifat best-effort */ }
+  }
 
   const result = await pool.query(
     `SELECT id, password_hash,
@@ -736,13 +802,24 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     [password, username],
   )
   const account = result.rows[0]
-  if (!account || !account.is_active) throw new HttpError(401, 'Nama pengguna atau kata sandi tidak cocok.')
-  if (!account.employee_active) throw new HttpError(403, 'Akun pegawai nonaktif. Hubungi Admin.')
+  if (!account || !account.is_active) {
+    await recordLoginAttempt(account?.id || null, false, account ? 'ACCOUNT_INACTIVE' : 'USER_NOT_FOUND')
+    throw new HttpError(401, 'Nama pengguna atau kata sandi tidak cocok.')
+  }
+  if (!account.employee_active) {
+    await recordLoginAttempt(account.id, false, 'EMPLOYEE_INACTIVE')
+    throw new HttpError(403, 'Akun pegawai nonaktif. Hubungi Admin.')
+  }
   if (account.locked_until && new Date(account.locked_until) > new Date()) {
+    await recordLoginAttempt(account.id, false, 'ACCOUNT_LOCKED')
     throw new HttpError(423, 'Akun terkunci sementara. Coba lagi setelah 15 menit.')
   }
   if (!account.password_ok) {
-    const failures = Number(account.failed_login_count) + 1
+    // Kunci yang sudah kedaluwarsa memulai hitungan dari nol, bukan menumpuk
+    // di atas hitungan lama (audit T1: satu gagalan setelah kedaluwarsa
+    // tidak boleh langsung mengunci ulang akun).
+    const lockExpired = account.locked_until && new Date(account.locked_until) <= new Date()
+    const failures = (lockExpired ? 0 : Number(account.failed_login_count || 0)) + 1
     const lockedUntil = failures >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null
     await pool.query(
       `UPDATE cuti.users
@@ -750,6 +827,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
        WHERE id = $1`,
       [account.id, failures, lockedUntil],
     )
+    await recordLoginAttempt(account.id, false, 'INVALID_PASSWORD')
     throw new HttpError(401, 'Nama pengguna atau kata sandi tidak cocok.')
   }
 
@@ -765,6 +843,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
      VALUES ($1, $2, $3::inet, $4, now() + make_interval(hours => $5))`,
     [account.id, hash(token), req.ip || null, req.get('user-agent') || null, sessionHours],
   )
+  await recordLoginAttempt(account.id, true, null)
   setSessionCookie(res, token)
   res.json({ user: publicUser(await loadUser(account.id)) })
 }))
@@ -1133,7 +1212,7 @@ app.get('/api/requests', requireAuth, asyncRoute(async (req, res) => {
   })
 }))
 
-app.put('/api/requests/:id/draft', requireAuth, upload.array('attachments', 5), asyncRoute(async (req, res) => {
+app.put('/api/requests/:id/draft', requireAuth, guardUpload, upload.array('attachments', 5), asyncRoute(async (req, res) => {
   requireEmployee(req.user)
   const reason = String(req.body?.reason || '').trim()
   const address = String(req.body?.address || '').trim()
@@ -1166,8 +1245,9 @@ app.put('/api/requests/:id/draft', requireAuth, upload.array('attachments', 5), 
     if (String(current.employee_id) !== String(req.user.employee.id)) {
       throw new HttpError(403, 'Anda hanya dapat mengubah draf milik sendiri.')
     }
-    if (String(current.status) !== 'DRAFT') {
-      throw new HttpError(409, 'Hanya pengajuan berstatus draf yang dapat diubah.')
+    // Draf baru dan pengajuan yang dikembalikan untuk perbaikan sama-sama dapat disunting.
+    if (!['DRAFT', 'RETURNED_FOR_REVISION'].includes(String(current.status))) {
+      throw new HttpError(409, 'Hanya pengajuan berstatus draf atau dikembalikan untuk perbaikan yang dapat diubah.')
     }
     const workingDays = Number(req.body?.workingDays)
     const context = await getRequestContext(
@@ -1271,20 +1351,25 @@ app.put('/api/requests/:id/draft', requireAuth, upload.array('attachments', 5), 
       `INSERT INTO cuti.leave_request_events
          (leave_request_id, event_type, from_status, to_status, description,
           actor_user_id, actor_role_code, payload)
-       VALUES ($1,'STATUS_CHANGED','DRAFT','DRAFT','Draf diperbarui.',$2,'EMPLOYEE',$3::jsonb)`,
-      [current.id, req.user.id, JSON.stringify({
-        leaveTypeCode: context.type.code,
-        startDate: context.startDate,
-        endDate: context.endDate,
-        workingDays,
-        attachmentsAdded: files.length,
-        attachmentsRemoved: removedFiles.length,
-      })],
+       VALUES ($1,'STATUS_CHANGED',$2,$2,$3,$4,'EMPLOYEE',$5::jsonb)`,
+      [current.id, current.status,
+        current.status === 'RETURNED_FOR_REVISION'
+          ? 'Perbaikan pengajuan disimpan oleh pegawai.'
+          : 'Draf diperbarui.',
+        req.user.id,
+        JSON.stringify({
+          leaveTypeCode: context.type.code,
+          startDate: context.startDate,
+          endDate: context.endDate,
+          workingDays,
+          attachmentsAdded: files.length,
+          attachmentsRemoved: removedFiles.length,
+        })],
     )
     return {
       id: current.id,
       requestNumber: current.request_number,
-      status: 'DRAFT',
+      status: current.status,
       endDate: context.endDate,
       workingDays,
     }
@@ -1314,15 +1399,20 @@ app.post('/api/requests/:id/submit', requireAuth, asyncRoute(async (req, res) =>
     if (String(request.employee_id) !== String(req.user.employee.id)) {
       throw new HttpError(403, 'Anda hanya dapat mengirim draf milik sendiri.')
     }
-    if (String(request.status) !== 'DRAFT') {
-      throw new HttpError(409, 'Hanya pengajuan berstatus draf yang dapat dikirim.')
+    const resubmit = String(request.status) === 'RETURNED_FOR_REVISION'
+    if (String(request.status) !== 'DRAFT' && !resubmit) {
+      throw new HttpError(409, 'Hanya pengajuan berstatus draf atau dikembalikan untuk perbaikan yang dapat dikirim.')
     }
     const startDate = String(request.start_date_text || '').slice(0, 10)
     const workingDays = Number(request.requested_working_days)
     const context = await getRequestContext(
       client, req.user, request.leave_type_code, startDate, workingDays,
     )
-    await submitLeaveRequest(client, req, request, context, workingDays)
+    // Audit T5: snapshot hari selalu ditulis ulang dari kalender aktif saat
+    // dikirim, agar data tersimpan identik dengan hasil validasi — kalender
+    // yang berubah setelah draf dibuat tidak lagi menimbulkan perbedaan.
+    await rewriteRequestSchedule(client, request, context)
+    await submitLeaveRequest(client, req, request, context, workingDays, { resubmit })
     return {
       id: request.id,
       requestNumber: request.request_number,
@@ -1491,7 +1581,36 @@ app.get('/api/approvals', requireAuth, asyncRoute(async (req, res) => {
   res.json({ items: filteredItems, summary })
 }))
 
-async function submitLeaveRequest(client, req, request, context, workingDays) {
+// Audit T5: tulis ulang snapshot jadwal (hari, tanggal selesai, versi kalender,
+// snapshot saldo) dari konteks hasil validasi agar data tersimpan selalu
+// identik dengan perhitungan saat pengajuan dikirim.
+async function rewriteRequestSchedule(client, request, context) {
+  await client.query(`DELETE FROM cuti.leave_request_days WHERE leave_request_id = $1`, [request.id])
+  for (const day of context.days) {
+    await client.query(
+      `INSERT INTO cuti.leave_request_days
+         (leave_request_id, leave_date, day_index, day_class, is_counted, calendar_date_id, note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [request.id, day.date, day.dayIndex, day.dayClass, day.counted, day.calendarDateId, day.note],
+    )
+  }
+  await client.query(
+    `UPDATE cuti.leave_requests
+     SET route_id = $2, calendar_version_id = $3, end_date = $4,
+         balance_snapshot = $5::jsonb, calculation_snapshot = $6::jsonb, updated_at = now()
+     WHERE id = $1`,
+    [
+      request.id,
+      context.route.id,
+      context.calendar.id,
+      context.endDate,
+      JSON.stringify(context.balance || {}),
+      JSON.stringify({ days: context.days }),
+    ],
+  )
+}
+
+async function submitLeaveRequest(client, req, request, context, workingDays, { resubmit = false } = {}) {
   const requestNumber = request.request_number
   await client.query(
     `UPDATE cuti.leave_requests
@@ -1499,6 +1618,15 @@ async function submitLeaveRequest(client, req, request, context, workingDays) {
      WHERE id = $1`,
     [request.id],
   )
+  // Kirim ulang setelah dikembalikan memakai percobaan (attempt) baru agar
+  // riwayat tahap attempt sebelumnya tetap utuh dan idempotency key unik.
+  const attemptResult = await client.query(
+    `SELECT COALESCE(MAX(attempt_no), 0) + 1 AS next_attempt
+     FROM cuti.leave_request_stages
+     WHERE leave_request_id = $1`,
+    [request.id],
+  )
+  const attemptNo = Number(attemptResult.rows[0].next_attempt)
   const steps = await client.query(
     `SELECT step.id, step.step_no, step.stage_code, step.role_code,
             step.unit_scope, step.decision_mode, step.is_final, step.sla_hours
@@ -1510,11 +1638,11 @@ async function submitLeaveRequest(client, req, request, context, workingDays) {
   for (const [index, step] of steps.rows.entries()) {
     await client.query(
       `INSERT INTO cuti.leave_request_stages (
-         leave_request_id, route_step_id, step_no, stage_code, role_code,
+         leave_request_id, route_step_id, attempt_no, step_no, stage_code, role_code,
          unit_scope, decision_mode, is_final, status, sla_hours,
          activated_at, due_at
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+         $1,$2,$12,$3,$4,$5,$6,$7,$8,$9,$10,
          CASE WHEN $9::varchar = 'ACTIVE' THEN now() END,
          CASE WHEN $9::varchar = 'ACTIVE' THEN now() + make_interval(hours => $11::int) END
        )`,
@@ -1530,6 +1658,7 @@ async function submitLeaveRequest(client, req, request, context, workingDays) {
         index === 0 ? 'ACTIVE' : 'PENDING',
         step.sla_hours,
         step.sla_hours,
+        attemptNo,
       ],
     )
   }
@@ -1548,13 +1677,16 @@ async function submitLeaveRequest(client, req, request, context, workingDays) {
       `INSERT INTO cuti.leave_balance_transactions (
          balance_id, leave_request_id, transaction_type, reserved_delta,
          reason, created_by_user_id, idempotency_key
-       ) VALUES ($1,$2,'RESERVATION',$3,'Reservasi saat pengajuan dikirim',$4,$5)`,
+       ) VALUES ($1,$2,'RESERVATION',$3,$4,$5,$6)`,
       [
         balance.rows[0].id,
         request.id,
         workingDays,
+        resubmit
+          ? `Reservasi ulang saat pengajuan dikirim ulang (percobaan ${attemptNo})`
+          : 'Reservasi saat pengajuan dikirim',
         req.user.id,
-        `RESERVE:${request.id}:1`,
+        `RESERVE:${request.id}:${attemptNo}`,
       ],
     )
   }
@@ -1562,20 +1694,30 @@ async function submitLeaveRequest(client, req, request, context, workingDays) {
     `INSERT INTO cuti.leave_request_events (
        leave_request_id, event_type, from_status, to_status, stage_code,
        description, actor_user_id, actor_role_code
-     ) VALUES ($1,'SUBMITTED','DRAFT','SUBMITTED','ADMIN_REVIEW',
-               'Pengajuan dikirim dan masuk antrean Admin.',$2,'EMPLOYEE')`,
-    [request.id, req.user.id],
+     ) VALUES ($1,$2,$3,'SUBMITTED','ADMIN_REVIEW',
+               $4,$5,'EMPLOYEE')`,
+    [
+      request.id,
+      resubmit ? 'RESUBMITTED' : 'SUBMITTED',
+      resubmit ? 'RETURNED_FOR_REVISION' : 'DRAFT',
+      resubmit
+        ? 'Pengajuan diperbaiki dan dikirim ulang; kembali ke antrean Admin.'
+        : 'Pengajuan dikirim dan masuk antrean Admin.',
+      req.user.id,
+    ],
   )
   await writeAudit(client, req, 'LEAVE_SUBMITTED', 'LEAVE_REQUEST', request.id, null, {
     request_number: requestNumber,
     status: 'SUBMITTED',
+    attempt_no: attemptNo,
+    resubmitted: resubmit,
     leaveTypeCode: context.type.code,
     startDate: context.startDate,
     endDate: context.endDate,
     workingDays,
   })
   await notifyRequestLifecycle(client, {
-    eventType: 'SUBMITTED',
+    eventType: resubmit ? 'RESUBMITTED' : 'SUBMITTED',
     request: {
       id: request.id,
       request_number: requestNumber,
@@ -1585,7 +1727,7 @@ async function submitLeaveRequest(client, req, request, context, workingDays) {
   })
 }
 
-app.post('/api/requests', requireAuth, upload.array('attachments', 5), asyncRoute(async (req, res) => {
+app.post('/api/requests', requireAuth, guardUpload, upload.array('attachments', 5), asyncRoute(async (req, res) => {
   requireEmployee(req.user)
   const startDate = String(req.body.startDate || '')
   const workingDays = Number(req.body.workingDays)
@@ -2523,6 +2665,45 @@ app.post('/api/admin/balances/:employeeId/adjustment', requireAuth, asyncRoute(a
         { availableDays: Number(before.available_days), deltaDays, availableAfter },
       )
     }
+
+    // Audit T4: (1) key klien yang sudah ada wajib cocok dengan payload —
+    // ketidakcocokan ditolak 409, bukan diam-diam di-skip; (2) penyesuaian
+    // identik (saldo, delta, alasan, referensi) dalam 60 detik dianggap
+    // double-click/retry dan mengembalikan hasil tanpa menambah baris ledger.
+    const existingByKey = await client.query(
+      `SELECT t.id, t.adjustment_delta, t.reason, t.balance_id
+       FROM cuti.leave_balance_transactions t
+       WHERE t.idempotency_key = $1
+       LIMIT 1`,
+      [idempotencyKey],
+    )
+    if (existingByKey.rowCount) {
+      const existing = existingByKey.rows[0]
+      const samePayload = Number(existing.adjustment_delta) === deltaDays
+        && String(existing.reason).trim() === reason
+        && String(existing.balance_id) === String(before.balance_id)
+      if (samePayload) {
+        return { reused: true, balance: before, transactionId: existing.id }
+      }
+      throw new HttpError(
+        409,
+        'Idempotency key sudah dipakai untuk penyesuaian saldo yang berbeda. Gunakan key baru.',
+      )
+    }
+    const recentDuplicate = await client.query(
+      `SELECT t.id
+       FROM cuti.leave_balance_transactions t
+       WHERE t.balance_id = $1 AND t.transaction_type = 'ADJUSTMENT'
+         AND t.adjustment_delta = $2 AND t.reason = $3
+         AND COALESCE(t.metadata->>'reference', '') = $4
+         AND t.occurred_at > now() - interval '60 seconds'
+       LIMIT 1`,
+      [before.balance_id, deltaDays, reason, reference || ''],
+    )
+    if (recentDuplicate.rowCount) {
+      return { reused: true, balance: before, transactionId: recentDuplicate.rows[0].id }
+    }
+
     const inserted = await client.query(
       `INSERT INTO cuti.leave_balance_transactions (
          balance_id, transaction_type, adjustment_delta, reason,
@@ -2544,7 +2725,26 @@ app.post('/api/admin/balances/:employeeId/adjustment', requireAuth, asyncRoute(a
       ],
     )
     if (!inserted.rowCount) {
-      return { reused: true, balance: before, transactionId: null }
+      // Konkurensi lintas-saldo dengan key sama: verifikasi payload pemenang.
+      const winner = await client.query(
+        `SELECT t.id, t.adjustment_delta, t.reason, t.balance_id
+         FROM cuti.leave_balance_transactions t
+         WHERE t.idempotency_key = $1
+         LIMIT 1`,
+        [idempotencyKey],
+      )
+      const winnerRow = winner.rows[0]
+      const samePayload = winnerRow
+        && Number(winnerRow.adjustment_delta) === deltaDays
+        && String(winnerRow.reason).trim() === reason
+        && String(winnerRow.balance_id) === String(before.balance_id)
+      if (samePayload) {
+        return { reused: true, balance: before, transactionId: winnerRow.id }
+      }
+      throw new HttpError(
+        409,
+        'Idempotency key sudah dipakai untuk penyesuaian saldo yang berbeda. Gunakan key baru.',
+      )
     }
     await writeAudit(client, req, 'BALANCE_ADJUSTED', 'LEAVE_BALANCE', before.balance_id, {
       periodYear: year,
@@ -3147,7 +3347,7 @@ app.get('/api/requests/:id', requireAuth, asyncRoute(async (req, res) => {
       activeStage: activeStage.rows[0] || null,
       canAct: Boolean(canAct),
       hasSignature: req.user.hasSignature,
-      canEditDraft: request.status === 'DRAFT'
+      canEditDraft: ['DRAFT', 'RETURNED_FOR_REVISION'].includes(request.status)
         && !!req.user.employee
         && String(request.employee_id) === String(req.user.employee.id),
       canWithdraw: withdrawCheck.allowed,
@@ -3173,7 +3373,7 @@ app.get('/api/requests/:id', requireAuth, asyncRoute(async (req, res) => {
 
 app.get('/api/attachments/:id', requireAuth, asyncRoute(async (req, res) => {
   const result = await pool.query(
-    `SELECT a.storage_key, a.original_filename, a.detected_mime, r.id AS request_id,
+    `SELECT a.storage_key, a.original_filename, a.detected_mime, r.id,
             r.employee_id, r.employee_category, r.employee_unit_id
      FROM cuti.leave_attachments a
      JOIN cuti.leave_requests r ON r.id = a.leave_request_id
@@ -3241,9 +3441,10 @@ app.delete('/api/attachments/:id', requireAuth, asyncRoute(async (req, res) => {
   res.json({ ok: true })
 }))
 
-app.post('/api/signature', requireAuth, express.raw({ type: ['image/png', 'image/jpeg'], limit: '2mb' }), asyncRoute(async (req, res) => {
+app.post('/api/signature', requireAuth, guardUpload, express.raw({ type: ['image/png', 'image/jpeg'], limit: '2mb' }), asyncRoute(async (req, res) => {
   // Validasi terpusat: magic bytes, ukuran, dimensi/piksel, polyglot.
-  const validated = await validateUpload(req.body, 'SIGNATURE', 'tanda-tangan')
+  // Body raw tanpa nama ber-ekstensi: ekstensi diambil dari MIME terdeteksi (audit T2).
+  const validated = await validateUpload(req.body, 'SIGNATURE', 'tanda-tangan', { allowMissingExtension: true })
   const key = validated.storageKey.replace(/^signatures\//, `signatures/${req.user.id}/`)
   const target = safeStoragePath(key)
   await mkdir(path.dirname(target), { recursive: true })
@@ -3573,6 +3774,8 @@ app.post('/api/requests/:id/action', requireAuth, asyncRoute(async (req, res) =>
 }))
 
 app.get('/api/admin/calendar/versions', requireAuth, asyncRoute(async (req, res) => {
+  // Audit T9: data seluruh versi (termasuk draf) hanya untuk pengelola kalender.
+  requireCalendarAdmin(req.user)
   const result = await pool.query(
     `SELECT id, code, name, status, effective_from::text, effective_to::text
      FROM cuti.work_calendar_versions
@@ -3705,6 +3908,8 @@ app.delete('/api/admin/calendar/categories/:id', requireAuth, asyncRoute(async (
 }))
 
 app.get('/api/admin/calendar', requireAuth, asyncRoute(async (req, res) => {
+  // Audit T9: daftar tanggal semua versi/unit hanya untuk pengelola kalender.
+  requireCalendarAdmin(req.user)
   const values = []
   const conditions = []
   const add = (value) => {
@@ -3970,6 +4175,13 @@ app.use((error, _req, res, _next) => {
     res.status(413).json({ error: 'Ukuran permintaan terlalu besar.' })
     return
   }
+  // Error dengan properti status HTTP valid dipetakan apa pun kelasnya —
+  // cancellation.js memiliki kelas HttpError sendiri sehingga `instanceof`
+  // di sini tidak menangkapnya (semua error pembatalan dulu jatuh ke 500).
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) {
+    res.status(error.status).json({ error: error.message, ...(error.details ? { details: error.details } : {}) })
+    return
+  }
   if (error instanceof HttpError) {
     res.status(error.status).json({ error: error.message, ...(error.details ? { details: error.details } : {}) })
     return
@@ -4139,47 +4351,54 @@ async function loadDocumentData(client, requestId) {
   )
   const request = requestResult.rows[0]
   if (!request) throw new HttpError(404, 'Pengajuan tidak ditemukan.')
-  const [approvalsResult, signaturesResult, balancesResult, employeeSignatureResult] = await Promise.all([
-    client.query(
-      `SELECT action, decision, notes, actor_role_code, actor_name, created_at
-       FROM cuti.leave_approvals WHERE leave_request_id = $1 ORDER BY created_at, id`,
-      [requestId],
-    ),
-    client.query(
-      `SELECT ds.signer_role_code, ds.signer_name, ds.signer_identity_number,
-              ds.document_hash, ds.signature_hash, ds.signed_at, us.storage_key
-       FROM cuti.document_signatures ds
-       LEFT JOIN cuti.user_signatures us ON us.id = ds.user_signature_id
-       WHERE ds.leave_request_id = $1
-       ORDER BY ds.signed_at, ds.id`,
-      [requestId],
-    ),
-    client.query(
-      `SELECT period_year, allocated_days, used_days, reserved_days, available_days
-       FROM cuti.leave_balances
-       WHERE employee_id = $1 AND leave_type_id = $2 AND period_year BETWEEN $3 AND $4
-       ORDER BY period_year`,
-      [request.employee_id, request.leave_type_id, Number(request.balance_period_year || 0) - 2, Number(request.balance_period_year || 0)],
-    ),
-    client.query(
-      `SELECT us.storage_key FROM cuti.user_signatures us
-       WHERE us.user_id = (SELECT user_id FROM cuti.employees WHERE id = $1)
-         AND us.is_active
-       ORDER BY us.created_at DESC LIMIT 1`,
-      [request.employee_id],
-    ),
-  ])
+  const approvalsResult = await client.query(
+    `SELECT action, decision, notes, actor_role_code, actor_name, created_at
+     FROM cuti.leave_approvals WHERE leave_request_id = $1 ORDER BY created_at, id`,
+    [requestId],
+  )
+  const signaturesResult = await client.query(
+    `SELECT ds.signer_role_code, ds.signer_name, ds.signer_identity_number,
+            ds.document_hash, ds.signature_hash, ds.signed_at, us.storage_key
+     FROM cuti.document_signatures ds
+     LEFT JOIN cuti.user_signatures us ON us.id = ds.user_signature_id
+     WHERE ds.leave_request_id = $1
+     ORDER BY ds.signed_at, ds.id`,
+    [requestId],
+  )
+  const balancesResult = await client.query(
+    `SELECT period_year, allocated_days, used_days, reserved_days, available_days
+     FROM cuti.leave_balances
+     WHERE employee_id = $1 AND leave_type_id = $2 AND period_year BETWEEN $3 AND $4
+     ORDER BY period_year`,
+    [request.employee_id, request.leave_type_id, Number(request.balance_period_year || 0) - 2, Number(request.balance_period_year || 0)],
+  )
+  const employeeSignatureResult = await client.query(
+    `SELECT us.storage_key FROM cuti.user_signatures us
+     WHERE us.user_id = (SELECT user_id FROM cuti.employees WHERE id = $1)
+       AND us.is_active
+     ORDER BY us.created_at DESC LIMIT 1`,
+    [request.employee_id],
+  )
+  const attachmentsResult = await client.query(
+    `SELECT id, storage_key, original_filename, detected_mime
+     FROM cuti.leave_attachments
+     WHERE leave_request_id = $1 AND deleted_at IS NULL
+     ORDER BY uploaded_at, id`,
+    [requestId],
+  )
   return {
     request,
     approvals: approvalsResult.rows,
     signatures: signaturesResult.rows,
     balances: balancesResult.rows,
     employeeSignature: employeeSignatureResult.rows[0] || null,
+    attachments: attachmentsResult.rows,
     sourceHash: hash(JSON.stringify({
       requestNumber: request.request_number,
       startDate: request.start_date,
       endDate: request.end_date,
       reason: request.reason,
+      attachments: attachmentsResult.rows.map(row => row.id),
       templateVersion: DOCUMENT_TEMPLATE_VERSION,
     })),
   }
@@ -4194,6 +4413,11 @@ function signatureImageLoader(signature) {
       return buf
     })
     .catch(() => null)
+}
+
+function attachmentFileLoader(attachment) {
+  if (!attachment?.storage_key) return null
+  return readFile(safeStoragePath(attachment.storage_key)).catch(() => null)
 }
 
 app.get('/api/me/signature', requireAuth, asyncRoute(async (req, res) => {
@@ -4276,7 +4500,7 @@ app.get('/api/profile/avatar', requireAuth, asyncRoute(async (req, res) => {
 }))
 
 // Upload / ganti foto profil (multipart, tepat 1 file).
-app.post('/api/profile/avatar', requireAuth, upload.single('avatar'), asyncRoute(async (req, res) => {
+app.post('/api/profile/avatar', requireAuth, guardUpload, upload.single('avatar'), asyncRoute(async (req, res) => {
   if (!req.file) throw new HttpError(400, 'Pilih file foto profil.')
   const validated = await validateUpload(req.file.buffer, 'AVATAR', req.file.originalname)
   const target = safeStoragePath(validated.storageKey)
@@ -4345,7 +4569,7 @@ app.delete('/api/profile/avatar', requireAuth, asyncRoute(async (req, res) => {
   res.json({ ok: true })
 }))
 
-app.get('/api/requests/:id/preview-document', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/requests/:id/preview-document', requireAuth, guardHeavyExport, asyncRoute(async (req, res) => {
   const result = await transaction(async (client) => {
     const document = await loadDocumentData(client, req.params.id)
     if (!(await canReadRequest(req.user, document.request))) {
@@ -4360,6 +4584,8 @@ app.get('/api/requests/:id/preview-document', requireAuth, asyncRoute(async (req
       letterNumber: document.request.letter_number || '',
       previewMode: true,
       signatureImageLoader,
+      attachments: document.attachments,
+      attachmentLoader: attachmentFileLoader,
     })
     return { pdf, request: document.request }
   })
@@ -4370,7 +4596,7 @@ app.get('/api/requests/:id/preview-document', requireAuth, asyncRoute(async (req
   res.send(result.pdf)
 }))
 
-app.get('/api/requests/:id/pdf', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/requests/:id/pdf', requireAuth, guardHeavyExport, asyncRoute(async (req, res) => {
   const result = await transaction(async (client) => {
     const document = await loadDocumentData(client, req.params.id)
     if (!(await canReadRequest(req.user, document.request))) {
@@ -4447,6 +4673,8 @@ app.get('/api/requests/:id/pdf', requireAuth, asyncRoute(async (req, res) => {
       letterNumber,
       previewMode: false,
       signatureImageLoader,
+      attachments: document.attachments,
+      attachmentLoader: attachmentFileLoader,
     })
     const storageKey = `documents/${token}.pdf`
     const target = path.join(storageRoot, storageKey)
@@ -4715,7 +4943,7 @@ async function loadReportForExport(query) {
   }
 }
 
-app.get('/api/admin/reports/leaves.pdf', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/admin/reports/leaves.pdf', requireAuth, guardHeavyExport, asyncRoute(async (req, res) => {
   requireAdmin(req.user)
   const report = await loadReportForExport(req.query)
   const pdf = await generateReportPdf(report)
@@ -4725,7 +4953,7 @@ app.get('/api/admin/reports/leaves.pdf', requireAuth, asyncRoute(async (req, res
   res.send(pdf)
 }))
 
-app.get('/api/admin/reports/leaves.xls', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/admin/reports/leaves.xls', requireAuth, guardHeavyExport, asyncRoute(async (req, res) => {
   requireAdmin(req.user)
   const report = await loadReportForExport(req.query)
   const summary = {
@@ -5133,51 +5361,30 @@ app.get('/api/calendar/markers', requireAuth, asyncRoute(async (req, res) => {
 // CALENDAR GRID VIEW (6 rows Mon-Sun for UI)
 // ============================================================
 
-app.get('/api/admin/calendar/grid', requireAuth, asyncRoute(async (req, res) => {
-  const versionId = positiveId(req.query.versionId, 'Versi kalender')
-  const year = Number(req.query.year)
-  const month = Number(req.query.month)
-  if (!year || year < 2000 || year > 2100) throw new HttpError(400, 'Tahun tidak valid.')
-  if (!month || month < 1 || month > 12) throw new HttpError(400, 'Bulan tidak valid.')
-
-  const versionResult = await pool.query(
-    `SELECT id, status FROM cuti.work_calendar_versions WHERE id = $1`,
-    [versionId]
-  )
-  if (!versionResult.rowCount) throw new HttpError(404, 'Versi kalender tidak ditemukan.')
-
+/** Rentang 6 minggu Senin-Minggu yang menutupi bulan target. */
+function monthGridRange(year, month) {
   const startOfMonth = new Date(Date.UTC(year, month - 1, 1))
   const endOfMonth = new Date(Date.UTC(year, month, 0))
   const startOfGrid = new Date(startOfMonth)
-  const firstDayOfWeek = startOfMonth.getUTCDay()
-  const offset = firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1
+  const offset = startOfMonth.getUTCDay() === 0 ? 6 : startOfMonth.getUTCDay() - 1
   startOfGrid.setUTCDate(startOfGrid.getUTCDate() - offset)
-
   const endOfGrid = new Date(endOfMonth)
-  const lastDayOfWeek = endOfMonth.getUTCDay()
-  const endOffset = lastDayOfWeek === 0 ? 0 : 7 - lastDayOfWeek
+  const endOffset = endOfMonth.getUTCDay() === 0 ? 0 : 7 - endOfMonth.getUTCDay()
   endOfGrid.setUTCDate(endOfGrid.getUTCDate() + endOffset)
+  return { gridStart: startOfGrid.toISOString().slice(0, 10), gridEnd: endOfGrid.toISOString().slice(0, 10) }
+}
 
-  const gridStart = startOfGrid.toISOString().slice(0, 10)
-  const gridEnd = endOfGrid.toISOString().slice(0, 10)
-
-  const datesResult = await pool.query(
-    `SELECT d.calendar_date::text, d.date_type, d.title, d.is_active, d.scope_type, d.organizational_unit_id,
-            c.name AS category_name, c.behavior, c.color, c.icon
-     FROM cuti.work_calendar_dates d
-     JOIN cuti.calendar_date_categories c ON c.code = d.date_type
-     WHERE d.calendar_version_id = $1 AND d.is_active
-       AND d.calendar_date BETWEEN $2::date AND $3::date
-     ORDER BY d.calendar_date`,
-    [versionId, gridStart, gridEnd]
-  )
-
+/** Susun grid kalender dari baris tanggal (dipakai admin dan pegawai). */
+function buildMonthGrid(datesRows, year, month, todayStr) {
   const specialDates = new Map()
-  for (const row of datesResult.rows) {
+  for (const row of datesRows) {
     specialDates.set(row.calendar_date, row)
   }
-
-  const todayStr = new Date().toISOString().slice(0, 10)
+  const startOfMonth = new Date(Date.UTC(year, month - 1, 1))
+  const endOfMonth = new Date(Date.UTC(year, month, 0))
+  const { gridStart, gridEnd } = monthGridRange(year, month)
+  const startOfGrid = new Date(`${gridStart}T00:00:00Z`)
+  const endOfGrid = new Date(`${gridEnd}T00:00:00Z`)
   const grid = []
   let cursor = new Date(startOfGrid)
   while (cursor <= endOfGrid) {
@@ -5185,12 +5392,11 @@ app.get('/api/admin/calendar/grid', requireAuth, asyncRoute(async (req, res) => 
     for (let i = 0; i < 7; i++) {
       const dateStr = cursor.toISOString().slice(0, 10)
       const isCurrentMonth = cursor.getUTCMonth() === month - 1 && cursor.getUTCFullYear() === year
-      const isToday = dateStr === todayStr
       const special = specialDates.get(dateStr)
       week.push({
         date: dateStr,
         isCurrentMonth,
-        isToday,
+        isToday: dateStr === todayStr,
         special: special ? {
           type: special.date_type,
           title: special.title,
@@ -5207,6 +5413,38 @@ app.get('/api/admin/calendar/grid', requireAuth, asyncRoute(async (req, res) => 
     }
     grid.push(week)
   }
+  return grid
+}
+
+app.get('/api/admin/calendar/grid', requireAuth, asyncRoute(async (req, res) => {
+  // Audit T9: grid semua versi/unit hanya untuk pengelola kalender.
+  requireCalendarAdmin(req.user)
+  const versionId = positiveId(req.query.versionId, 'Versi kalender')
+  const year = Number(req.query.year)
+  const month = Number(req.query.month)
+  if (!year || year < 2000 || year > 2100) throw new HttpError(400, 'Tahun tidak valid.')
+  if (!month || month < 1 || month > 12) throw new HttpError(400, 'Bulan tidak valid.')
+
+  const versionResult = await pool.query(
+    `SELECT id, status FROM cuti.work_calendar_versions WHERE id = $1`,
+    [versionId]
+  )
+  if (!versionResult.rowCount) throw new HttpError(404, 'Versi kalender tidak ditemukan.')
+
+  const { gridStart, gridEnd } = monthGridRange(year, month)
+  const datesResult = await pool.query(
+    `SELECT d.calendar_date::text, d.date_type, d.title, d.is_active, d.scope_type, d.organizational_unit_id,
+            c.name AS category_name, c.behavior, c.color, c.icon
+     FROM cuti.work_calendar_dates d
+     JOIN cuti.calendar_date_categories c ON c.code = d.date_type
+     WHERE d.calendar_version_id = $1 AND d.is_active
+       AND d.calendar_date BETWEEN $2::date AND $3::date
+     ORDER BY d.calendar_date`,
+    [versionId, gridStart, gridEnd]
+  )
+
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const grid = buildMonthGrid(datesResult.rows, year, month, todayStr)
 
   const categoriesResult = await pool.query(
     `SELECT id, code, name, behavior, color, icon, is_system
@@ -5222,11 +5460,82 @@ app.get('/api/admin/calendar/grid', requireAuth, asyncRoute(async (req, res) => 
   })
 }))
 
+// Kalender untuk pegawai (audit T9): versi ACTIVE otomatis, tanggal hanya
+// cakupan unitnya — padanan read-only dari endpoint admin.
+app.get('/api/calendar/grid', requireAuth, asyncRoute(async (req, res) => {
+  const year = Number(req.query.year)
+  const month = Number(req.query.month)
+  if (!year || year < 2000 || year > 2100) throw new HttpError(400, 'Tahun tidak valid.')
+  if (!month || month < 1 || month > 12) throw new HttpError(400, 'Bulan tidak valid.')
+
+  const monthStart = new Date(Date.UTC(year, month - 1, 1))
+  const anchor = monthStart.toISOString().slice(0, 10)
+  const versionResult = await pool.query(
+    `SELECT id, code, name, status, effective_from::text, effective_to::text
+     FROM cuti.work_calendar_versions
+     WHERE status = 'ACTIVE' AND effective_from <= $1
+       AND (effective_to IS NULL OR effective_to >= $1)
+     ORDER BY effective_from DESC LIMIT 1`,
+    [anchor],
+  )
+  const version = versionResult.rows[0] || null
+
+  let unitId = null
+  if (req.user.employee?.id) {
+    const assignment = await pool.query(
+      `SELECT organizational_unit_id FROM cuti.v_employee_current_assignment WHERE employee_id = $1`,
+      [req.user.employee.id],
+    )
+    unitId = assignment.rows[0]?.organizational_unit_id || null
+  }
+
+  let grid = []
+  if (version) {
+    const { gridStart, gridEnd } = monthGridRange(year, month)
+    const datesResult = await pool.query(
+      `SELECT d.calendar_date::text, d.date_type, d.title, d.is_active, d.scope_type, d.organizational_unit_id,
+              c.name AS category_name, c.behavior, c.color, c.icon
+       FROM cuti.work_calendar_dates d
+       JOIN cuti.calendar_date_categories c ON c.code = d.date_type
+       WHERE d.calendar_version_id = $1 AND d.is_active
+         AND d.calendar_date BETWEEN $2::date AND $3::date
+         AND (d.scope_type = 'ALL' OR d.organizational_unit_id = $4)
+       ORDER BY d.calendar_date`,
+      [version.id, gridStart, gridEnd, unitId],
+    )
+    grid = buildMonthGrid(datesResult.rows, year, month, new Date().toISOString().slice(0, 10))
+  }
+
+  const categoriesResult = await pool.query(
+    `SELECT id, code, name, behavior, color, icon, is_system
+     FROM cuti.calendar_date_categories ORDER BY is_system DESC, name`,
+  )
+
+  res.json({
+    year, month,
+    grid,
+    version,
+    categories: categoriesResult.rows,
+    dateTypes: categoriesResult.rows.map(row => row.code),
+  })
+}))
+
+// Versi kalender untuk pegawai (audit T9): hanya versi ACTIVE.
+app.get('/api/calendar/versions', requireAuth, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, code, name, status, effective_from::text, effective_to::text
+     FROM cuti.work_calendar_versions
+     WHERE status = 'ACTIVE'
+     ORDER BY effective_from DESC`,
+  )
+  res.json({ items: result.rows })
+}))
+
 // ============================================================
 // CALENDAR IMPORT (preview & commit)
 // ============================================================
 
-app.post('/api/admin/calendar/import/preview', requireAuth, upload.single('file'), asyncRoute(async (req, res) => {
+app.post('/api/admin/calendar/import/preview', requireAuth, guardUpload, upload.single('file'), asyncRoute(async (req, res) => {
   requireCalendarAdmin(req.user)
   const versionId = positiveId(req.body?.versionId, 'Versi kalender')
   const file = req.file
@@ -5466,6 +5775,13 @@ app.use((error, _req, res, _next) => {
   }
   if (error?.type === 'entity.too.large') {
     res.status(413).json({ error: 'Ukuran permintaan terlalu besar.' })
+    return
+  }
+  // Error dengan properti status HTTP valid dipetakan apa pun kelasnya —
+  // cancellation.js memiliki kelas HttpError sendiri sehingga `instanceof`
+  // di sini tidak menangkapnya (semua error pembatalan dulu jatuh ke 500).
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) {
+    res.status(error.status).json({ error: error.message, ...(error.details ? { details: error.details } : {}) })
     return
   }
   if (error instanceof HttpError) {

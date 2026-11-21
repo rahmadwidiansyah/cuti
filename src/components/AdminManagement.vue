@@ -1,5 +1,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { X } from 'lucide-vue-next'
+import { confirmAction, successDialog } from '../sweetalert.js'
+import StatusPill from './StatusPill.vue'
+import TablePager from './TablePager.vue'
 
 const activeTab = ref('employees')
 const employees = ref([])
@@ -47,8 +51,8 @@ const accountForm = reactive({
   unitId: '',
 })
 
-const employeePages = computed(() => Math.max(1, Math.ceil(Number(employeeOptions.value.summary?.total || 0) / 25)))
-const accountPages = computed(() => Math.max(1, Math.ceil(Number(accountOptions.value.summary?.total || 0) / 25)))
+const employeePageSize = 20
+const accountPageSize = 20
 const isContract = computed(() => employeeForm.category === 'KONTRAK')
 
 function categoryLabel(code) {
@@ -108,8 +112,8 @@ async function loadEmployees() {
   error.value = ''
   try {
     const params = new URLSearchParams({
-      limit: '25',
-      offset: String(employeePage.value * 25),
+      limit: String(employeePageSize),
+      offset: String(employeePage.value * employeePageSize),
     })
     if (employeeQuery.value.trim()) params.set('q', employeeQuery.value.trim())
     if (employeeStatus.value) params.set('status', employeeStatus.value)
@@ -135,8 +139,8 @@ async function loadAccounts() {
   error.value = ''
   try {
     const params = new URLSearchParams({
-      limit: '25',
-      offset: String(accountPage.value * 25),
+      limit: String(accountPageSize),
+      offset: String(accountPage.value * accountPageSize),
     })
     if (accountQuery.value.trim()) params.set('q', accountQuery.value.trim())
     const data = await api(`/admin/accounts?${params}`)
@@ -222,22 +226,48 @@ function changeEmployeeCategory() {
 
 async function saveEmployee() {
   formError.value = ''
-  if (employeeEditingId.value && employeeForm.status === 'INACTIVE') {
-    const current = employees.value.find((item) => String(item.id) === String(employeeEditingId.value))
-    if (current?.employment_status === 'ACTIVE' && !window.confirm('Nonaktifkan pegawai ini? Akun yang terhubung juga akan dinonaktifkan.')) return
+  const wasEdit = Boolean(employeeEditingId.value)
+  const deactivating = wasEdit && employeeForm.status === 'INACTIVE'
+    && employees.value.find((item) => String(item.id) === String(employeeEditingId.value))?.employment_status === 'ACTIVE'
+  if (deactivating) {
+    const ok = await confirmAction({
+      title: 'Nonaktifkan pegawai ini?',
+      text: 'Akun yang terhubung juga akan dinonaktifkan dan sesi masuknya dicabut.',
+      confirmText: 'Ya, nonaktifkan',
+      danger: true,
+    })
+    if (!ok) return
+  } else {
+    const ok = await confirmAction(wasEdit
+      ? {
+          title: 'Simpan perubahan data pegawai?',
+          text: 'Perubahan data pegawai langsung berlaku.',
+          confirmText: 'Ya, simpan',
+        }
+      : {
+          title: 'Tambah data pegawai baru?',
+          text: 'Pegawai baru dapat langsung mengajukan cuti sesuai kategori.',
+          confirmText: 'Ya, simpan',
+          icon: 'info',
+        })
+    if (!ok) return
   }
   saving.value = true
   try {
-    const path = employeeEditingId.value
+    const path = wasEdit
       ? `/admin/employees/${encodeURIComponent(employeeEditingId.value)}`
       : '/admin/employees'
     await api(path, {
-      method: employeeEditingId.value ? 'PUT' : 'POST',
+      method: wasEdit ? 'PUT' : 'POST',
       body: JSON.stringify(employeeForm),
     })
-    notice.value = employeeEditingId.value ? 'Data pegawai diperbarui.' : 'Data pegawai ditambahkan.'
+    notice.value = wasEdit ? 'Data pegawai diperbarui.' : 'Data pegawai ditambahkan.'
     closeEmployeeForm()
     await loadEmployees()
+    await successDialog({
+      title: 'Data pegawai tersimpan',
+      text: wasEdit ? 'Data pegawai berhasil diperbarui.' : 'Data pegawai baru berhasil ditambahkan.',
+    })
   } catch (requestError) {
     formError.value = requestError.message
   } finally {
@@ -297,22 +327,48 @@ watch(() => accountForm.roles.includes('KASUBAG'), (isKasubag) => {
 
 async function saveAccount() {
   formError.value = ''
-  if (accountEditingId.value && !accountForm.isActive) {
-    const current = accounts.value.find((item) => String(item.id) === String(accountEditingId.value))
-    if (current?.is_active && !window.confirm('Nonaktifkan akun ini dan cabut semua sesi masuknya?')) return
+  const wasEdit = Boolean(accountEditingId.value)
+  const deactivating = wasEdit && !accountForm.isActive
+    && accounts.value.find((item) => String(item.id) === String(accountEditingId.value))?.is_active
+  if (deactivating) {
+    const ok = await confirmAction({
+      title: 'Nonaktifkan akun ini?',
+      text: 'Semua sesi masuk akun ini akan dicabut.',
+      confirmText: 'Ya, nonaktifkan',
+      danger: true,
+    })
+    if (!ok) return
+  } else {
+    const ok = await confirmAction(wasEdit
+      ? {
+          title: 'Simpan perubahan akun?',
+          text: 'Perubahan data akun langsung berlaku.',
+          confirmText: 'Ya, simpan',
+        }
+      : {
+          title: 'Tambah akun baru?',
+          text: 'Akun baru dapat langsung dipakai untuk masuk ke aplikasi.',
+          confirmText: 'Ya, simpan',
+          icon: 'info',
+        })
+    if (!ok) return
   }
   saving.value = true
   try {
-    const path = accountEditingId.value
+    const path = wasEdit
       ? `/admin/accounts/${encodeURIComponent(accountEditingId.value)}`
       : '/admin/accounts'
     await api(path, {
-      method: accountEditingId.value ? 'PUT' : 'POST',
+      method: wasEdit ? 'PUT' : 'POST',
       body: JSON.stringify(accountForm),
     })
-    notice.value = accountEditingId.value ? 'Akun diperbarui.' : 'Akun ditambahkan.'
+    notice.value = wasEdit ? 'Akun diperbarui.' : 'Akun ditambahkan.'
     closeAccountForm()
     await loadAccounts()
+    await successDialog({
+      title: 'Akun tersimpan',
+      text: wasEdit ? 'Data akun berhasil diperbarui.' : 'Akun baru berhasil ditambahkan.',
+    })
   } catch (requestError) {
     formError.value = requestError.message
   } finally {
@@ -330,13 +386,13 @@ async function searchAccounts() {
   await loadAccounts()
 }
 
-async function moveEmployeePage(delta) {
-  employeePage.value = Math.max(0, Math.min(employeePages.value - 1, employeePage.value + delta))
+async function goToEmployeePage(target) {
+  employeePage.value = target
   await loadEmployees()
 }
 
-async function moveAccountPage(delta) {
-  accountPage.value = Math.max(0, Math.min(accountPages.value - 1, accountPage.value + delta))
+async function goToAccountPage(target) {
+  accountPage.value = target
   await loadAccounts()
 }
 
@@ -365,7 +421,7 @@ onMounted(loadEmployees)
     <p v-if="loading" class="state-message" role="status">Memuat {{ activeTab === 'employees' ? 'data pegawai' : 'akun pengguna' }}…</p>
 
     <template v-if="activeTab === 'employees'">
-      <section class="panel">
+      <section class="panel panel-flex">
         <div class="section-heading">
           <h2>Data pegawai</h2>
           <button class="button button-primary" type="button" @click="startNewEmployee">Tambah pegawai</button>
@@ -398,7 +454,7 @@ onMounted(loadEmployees)
                 <td>{{ employee.nik || employee.nip }}</td>
                 <td>{{ categoryLabel(employee.employment_category) }}<small v-if="employee.profession">{{ professionLabel(employee.profession) }}</small></td>
                 <td>{{ employee.unit_name || '-' }}<small>{{ employee.position_name || 'Jabatan belum diisi' }}</small></td>
-                <td><span class="status-badge" :class="employee.employment_status === 'ACTIVE' ? 'tone-success' : 'tone-neutral'">{{ employee.employment_status === 'ACTIVE' ? 'Aktif' : 'Nonaktif' }}</span></td>
+                <td><StatusPill :status="employee.employment_status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE'" /></td>
                 <td>{{ employee.username || 'Belum terhubung' }}</td>
                 <td><button class="button button-secondary button-small" type="button" @click="editEmployee(employee)">Ubah</button></td>
               </tr>
@@ -409,7 +465,7 @@ onMounted(loadEmployees)
           <article v-for="employee in employees" :key="employee.id" class="record-card">
             <div class="directory-card-heading">
               <div><strong>{{ employee.full_name }}</strong><small>{{ categoryLabel(employee.employment_category) }}<span v-if="employee.profession"> · {{ professionLabel(employee.profession) }}</span></small></div>
-              <span class="status-badge" :class="employee.employment_status === 'ACTIVE' ? 'tone-success' : 'tone-neutral'">{{ employee.employment_status === 'ACTIVE' ? 'Aktif' : 'Nonaktif' }}</span>
+              <StatusPill :status="employee.employment_status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE'" />
             </div>
             <p>{{ employee.nik || employee.nip }}</p>
             <small>{{ employee.unit_name || 'Unit belum diisi' }} · {{ employee.position_name || 'Jabatan belum diisi' }}</small>
@@ -418,20 +474,20 @@ onMounted(loadEmployees)
           </article>
         </div>
         <p v-if="!loading && !error && !employees.length" class="empty-state">Tidak ada pegawai yang cocok. Ubah pencarian atau filter status.</p>
-        <div v-if="employeeOptions.summary.total > 25" class="pagination">
-          <span>Halaman {{ employeePage + 1 }} dari {{ employeePages }}</span>
-          <div>
-            <button class="button button-secondary button-small" type="button" :disabled="employeePage === 0" @click="moveEmployeePage(-1)">Sebelumnya</button>
-            <button class="button button-secondary button-small" type="button" :disabled="employeePage + 1 >= employeePages" @click="moveEmployeePage(1)">Berikutnya</button>
-          </div>
-        </div>
+        <TablePager
+          :page="employeePage"
+          :total="Number(employeeOptions.summary?.total || 0)"
+          :page-size="employeePageSize"
+          label="data pegawai"
+          @change="goToEmployeePage"
+        />
       </section>
 
       <section v-if="employeeFormOpen" class="modal-backdrop-overlay" @click.self="closeEmployeeForm">
         <div class="modal-form-card">
           <div class="modal-form-header">
             <h3>{{ employeeEditingId ? 'Ubah data pegawai' : 'Tambah pegawai' }}</h3>
-            <button class="button button-quiet button-small" type="button" @click="closeEmployeeForm">✕</button>
+            <button class="button button-quiet button-small" type="button" @click="closeEmployeeForm" aria-label="Tutup"><X :size="14" aria-hidden="true" /></button>
           </div>
           <div class="modal-form-body">
             <p v-if="formError" class="alert alert-danger">{{ formError }}</p>
@@ -517,7 +573,7 @@ onMounted(loadEmployees)
     </template>
 
     <template v-else>
-      <section class="panel">
+      <section class="panel panel-flex">
         <div class="section-heading">
           <h2>Akun pengguna</h2>
           <button class="button button-primary" type="button" @click="startNewAccount">Tambah akun</button>
@@ -527,7 +583,7 @@ onMounted(loadEmployees)
             <label for="account-search">Cari akun</label>
             <input id="account-search" v-model="accountQuery" type="search" placeholder="Nama, username, email, atau pegawai" />
           </div>
-          <button class="button button-secondary" type="submit">Cari</button>
+          <button class="button button-secondary" type="submit">Terapkan</button>
         </form>
         <div v-if="accounts.length" class="table-wrap">
           <table>
@@ -538,7 +594,7 @@ onMounted(loadEmployees)
                 <td>{{ account.roles.map((role) => role.name).join(', ') || 'Tanpa role' }}<small v-if="account.roles.some((role) => role.code === 'KASUBAG')">{{ account.roles.find((role) => role.code === 'KASUBAG')?.unitName }}</small></td>
                 <td>{{ account.employee_name ? `${account.employee_name} · ${categoryLabel(account.employment_category)}` : 'Tidak terhubung' }}</td>
                 <td>{{ dateTimeLabel(account.last_login_at) }}</td>
-                <td><span class="status-badge" :class="account.is_active ? 'tone-success' : 'tone-neutral'">{{ account.is_active ? 'Aktif' : 'Nonaktif' }}</span></td>
+                <td><StatusPill :status="account.is_active ? 'ACTIVE' : 'INACTIVE'" /></td>
                 <td><button class="button button-secondary button-small" type="button" @click="editAccount(account)">Ubah</button></td>
               </tr>
             </tbody>
@@ -548,7 +604,7 @@ onMounted(loadEmployees)
           <article v-for="account in accounts" :key="account.id" class="record-card">
             <div class="directory-card-heading">
               <div><strong>{{ account.full_name }}</strong><small>{{ account.username }} · {{ account.email }}</small></div>
-              <span class="status-badge" :class="account.is_active ? 'tone-success' : 'tone-neutral'">{{ account.is_active ? 'Aktif' : 'Nonaktif' }}</span>
+              <StatusPill :status="account.is_active ? 'ACTIVE' : 'INACTIVE'" />
             </div>
             <p>{{ account.roles.map((role) => role.name).join(', ') || 'Tanpa role' }}</p>
             <small>{{ account.employee_name ? `Pegawai: ${account.employee_name}` : 'Tidak terhubung ke data pegawai' }}</small>
@@ -556,20 +612,20 @@ onMounted(loadEmployees)
           </article>
         </div>
         <p v-if="!loading && !error && !accounts.length" class="empty-state">Tidak ada akun yang cocok dengan pencarian.</p>
-        <div v-if="accountOptions.summary.total > 25" class="pagination">
-          <span>Halaman {{ accountPage + 1 }} dari {{ accountPages }}</span>
-          <div>
-            <button class="button button-secondary button-small" type="button" :disabled="accountPage === 0" @click="moveAccountPage(-1)">Sebelumnya</button>
-            <button class="button button-secondary button-small" type="button" :disabled="accountPage + 1 >= accountPages" @click="moveAccountPage(1)">Berikutnya</button>
-          </div>
-        </div>
+        <TablePager
+          :page="accountPage"
+          :total="Number(accountOptions.summary?.total || 0)"
+          :page-size="accountPageSize"
+          label="akun"
+          @change="goToAccountPage"
+        />
       </section>
 
       <section v-if="accountFormOpen" class="modal-backdrop-overlay" @click.self="closeAccountForm">
         <div class="modal-form-card">
           <div class="modal-form-header">
             <h3>{{ accountEditingId ? 'Ubah akun' : 'Tambah akun' }}</h3>
-            <button class="button button-quiet button-small" type="button" @click="closeAccountForm">✕</button>
+            <button class="button button-quiet button-small" type="button" @click="closeAccountForm" aria-label="Tutup"><X :size="14" aria-hidden="true" /></button>
           </div>
           <div class="modal-form-body">
             <p v-if="formError" class="alert alert-danger">{{ formError }}</p>

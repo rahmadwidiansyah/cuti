@@ -61,17 +61,21 @@ Tombol floating di halaman login **sengaja nonaktif di image produksi**. Dua var
 |---|---|---|
 | `VITE_SHOW_DEMO_LOGIN=true` | build image | Menyertakan tombol di bundle frontend |
 | `SEED_DEMO_ACCOUNTS=true` | container start | Membuat 10 akun demo bila belum ada (idempoten) |
-| `DEMO_PASSWORD` | seed | Kata sandi demo, bawaan `Cuti123!` |
+| `DEMO_PASSWORD` | seed | Kata sandi akun demo |
 
 Contoh untuk lingkungan demo:
 
 ```bash
-VITE_SHOW_DEMO_LOGIN=true SEED_DEMO_ACCOUNTS=true docker compose up -d --build
+VITE_SHOW_DEMO_LOGIN=true SEED_DEMO_ACCOUNTS=true DEMO_PASSWORD=isi-kata-sandi-demo docker compose up -d --build
 ```
 
-Karena `VITE_SHOW_DEMO_LOGIN` dipakai saat build, **image harus di-build ulang** setelah mengubahnya. Workflow CI (`.github/workflows/ci.yml`) sudah meneruskan build-arg ini ke image GHCR, dengan nilai bawaan `true`. Nilai bawaan bisa ditimpa lewat GitHub Actions variable repository `VITE_SHOW_DEMO_LOGIN`. Untuk produksi, set variable itu ke `false` agar kredensial demo tidak terekspos.
+Karena `VITE_SHOW_DEMO_LOGIN` dipakai saat build, **image harus di-build ulang** setelah mengubahnya. Workflow CI (`.github/workflows/ci.yml`) meneruskan build-arg ini ke image GHCR dengan **nilai bawaan `false` (fail-closed)** — bubble demo hanya muncul bila repository variable `VITE_SHOW_DEMO_LOGIN` di-set `true` secara eksplisit.
 
-Image hasil CI juga perlu `SEED_DEMO_ACCOUNTS=true` saat container dijalankan supaya akun-akun demo tersedia di database.
+Audit T7 — seed demo di produksi (`NODE_ENV=production`) kini menolak berjalan bila:
+- `DEMO_PASSWORD` kosong atau memakai kata sandi publik bawaan (`Cuti123!` dsb.), atau
+- database sudah berisi pengguna aktif non-demo.
+
+Kata sandi demo juga tidak pernah dicetak ke log kontainer.
 
 ## 3. Siapkan direktori penyimpanan
 

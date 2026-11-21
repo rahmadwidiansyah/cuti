@@ -37,6 +37,28 @@ export function calculateUsedWorkingDays(days, effectiveDate) {
 }
 
 /**
+ * Checks whether the latest balance transaction of the request is still an
+ * active RESERVATION. RETURN already releases the reservation, so withdraw or
+ * admin-cancel on a returned request must NOT release it a second time
+ * (audit K2: double-release corrupts reserved/available days silently).
+ *
+ * @param {object} client - pg client inside a transaction
+ * @param {number|string} requestId
+ * @returns {Promise<boolean>}
+ */
+export async function reservationStillActive(client, requestId) {
+  const result = await client.query(
+    `SELECT transaction_type
+     FROM cuti.leave_balance_transactions
+     WHERE leave_request_id = $1
+     ORDER BY id DESC
+     LIMIT 1`,
+    [requestId],
+  )
+  return result.rows[0]?.transaction_type === 'RESERVATION'
+}
+
+/**
  * Validates if an employee can withdraw (cancel) their own leave request.
  * PRD 10.4, AT-048, AT-049:
  * Only permitted before Admin verification has been completed.
@@ -60,7 +82,9 @@ export function canEmployeeWithdraw(request, userId) {
   if (!preVerificationStatuses.includes(request.status)) {
     return {
       allowed: false,
-      reason: 'Pengajuan sudah melewati verifikasi Admin dan tidak dapat dibatalkan mandiri. Hubungi Admin TU.',
+      reason: request.status === 'WITHDRAWN' || request.status === 'CANCELLED'
+        ? 'Pengajuan sudah tidak aktif dan tidak dapat ditarik kembali.'
+        : 'Pengajuan sudah melewati verifikasi Admin dan tidak dapat dibatalkan mandiri. Hubungi Admin TU.',
     }
   }
 
@@ -216,22 +240,28 @@ export async function withdrawLeaveRequest(client, user, requestId, reason, opti
       balanceBefore = Number(balance.available_days)
       const requestedDays = Number(request.requested_working_days)
 
-      await client.query(
-        `INSERT INTO cuti.leave_balance_transactions (
-           balance_id, leave_request_id, transaction_type, reserved_delta,
-           reason, created_by_user_id, idempotency_key
-         ) VALUES ($1,$2,'RELEASE',$3,$4,$5,$6)`,
-        [
-          balance.id,
-          request.id,
-          -requestedDays,
-          'Pelepasan reservasi saldo karena pengajuan ditarik oleh pegawai',
-          user.id,
-          `RELEASE:WITHDRAW:${request.id}`,
-        ],
-      )
+      // Pengajuan yang dikembalikan untuk perbaikan sudah melepas reservasi
+      // saat RETURN; lepaskan hanya bila reservasi masih aktif (audit K2).
+      if (await reservationStillActive(client, request.id)) {
+        await client.query(
+          `INSERT INTO cuti.leave_balance_transactions (
+             balance_id, leave_request_id, transaction_type, reserved_delta,
+             reason, created_by_user_id, idempotency_key
+           ) VALUES ($1,$2,'RELEASE',$3,$4,$5,$6)`,
+          [
+            balance.id,
+            request.id,
+            -requestedDays,
+            'Pelepasan reservasi saldo karena pengajuan ditarik oleh pegawai',
+            user.id,
+            `RELEASE:WITHDRAW:${request.id}`,
+          ],
+        )
 
-      balanceAfter = balanceBefore + requestedDays
+        balanceAfter = balanceBefore + requestedDays
+      } else {
+        balanceAfter = balanceBefore
+      }
     }
   }
 
@@ -370,7 +400,24 @@ export async function cancelLeaveRequest(client, user, requestId, payload = {}, 
   const isApproved = previousStatus === 'APPROVED'
   const deductsAnnual = Boolean(request.deducts_annual_balance || request.is_annual_leave)
 
-  let effectiveDate = payload.effectiveDate ? String(payload.effectiveDate).slice(0, 10) : new Date().toISOString().slice(0, 10)
+  // Audit T3: effectiveDate wajib tanggal kalender valid dan tidak boleh di masa
+  // depan. Nilai sampah dulu lolos sampai INSERT (500), tanggal masa depan
+  // mengacaukan perhitungan hari terpakai pada pembatalan.
+  const todayStr = new Date().toISOString().slice(0, 10)
+  let effectiveDate = payload.effectiveDate
+    ? String(payload.effectiveDate).slice(0, 10)
+    : todayStr
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) {
+    throw new HttpError(400, 'Tanggal efektif pembatalan harus dalam format YYYY-MM-DD.')
+  }
+  const parsedEffective = new Date(`${effectiveDate}T00:00:00Z`)
+  if (Number.isNaN(parsedEffective.valueOf())
+    || parsedEffective.toISOString().slice(0, 10) !== effectiveDate) {
+    throw new HttpError(400, 'Tanggal efektif pembatalan bukan tanggal kalender yang valid.')
+  }
+  if (effectiveDate > todayStr) {
+    throw new HttpError(400, 'Tanggal efektif pembatalan tidak boleh di masa depan.')
+  }
   let approvedDays = 0
   let usedDays = 0
   let maxRestorable = 0
@@ -378,6 +425,7 @@ export async function cancelLeaveRequest(client, user, requestId, payload = {}, 
   let balanceId = null
   let balanceBefore = null
   let balanceAfter = null
+  let releasedReservation = false
 
   if (isApproved) {
     approvedDays = Number(request.approved_working_days || request.requested_working_days)
@@ -460,22 +508,29 @@ export async function cancelLeaveRequest(client, user, requestId, payload = {}, 
         balanceBefore = Number(balance.available_days)
         const requestedDays = Number(request.requested_working_days)
 
-        await client.query(
-          `INSERT INTO cuti.leave_balance_transactions (
-             balance_id, leave_request_id, transaction_type, reserved_delta,
-             reason, created_by_user_id, idempotency_key
-           ) VALUES ($1,$2,'RELEASE',$3,$4,$5,$6)`,
-          [
-            balance.id,
-            request.id,
-            -requestedDays,
-            'Pelepasan reservasi saldo atas pembatalan pengajuan sebelum final oleh Admin',
-            user.id,
-            `RELEASE:ADMIN_CANCEL:${request.id}`,
-          ],
-        )
+        // RETURNED_FOR_REVISION sudah dilepas oleh RETURN; lepaskan hanya
+        // bila reservasi attempt berjalan masih aktif (audit K2).
+        if (await reservationStillActive(client, request.id)) {
+          await client.query(
+            `INSERT INTO cuti.leave_balance_transactions (
+               balance_id, leave_request_id, transaction_type, reserved_delta,
+               reason, created_by_user_id, idempotency_key
+             ) VALUES ($1,$2,'RELEASE',$3,$4,$5,$6)`,
+            [
+              balance.id,
+              request.id,
+              -requestedDays,
+              'Pelepasan reservasi saldo atas pembatalan pengajuan sebelum final oleh Admin',
+              user.id,
+              `RELEASE:ADMIN_CANCEL:${request.id}`,
+            ],
+          )
 
-        balanceAfter = balanceBefore + requestedDays
+          releasedReservation = true
+          balanceAfter = balanceBefore + requestedDays
+        } else {
+          balanceAfter = balanceBefore
+        }
       }
     }
   }
@@ -524,7 +579,7 @@ export async function cancelLeaveRequest(client, user, requestId, payload = {}, 
   // 4. Record event
   const desc = isApproved
     ? `Cuti disetujui dibatalkan Admin (${source === 'EMPLOYEE_REQUEST' ? 'Permintaan Pegawai' : 'Inisiatif Admin'}): ${trimmedReason}. Hari digunakan: ${usedDays}, dikembalikan: ${restoredDays} hari.`
-    : `Pengajuan dibatalkan Admin sebelum final: ${trimmedReason}. Reservasi saldo dilepas.`
+    : `Pengajuan dibatalkan Admin sebelum final: ${trimmedReason}. ${releasedReservation ? 'Reservasi saldo dilepas.' : 'Reservasi saldo sudah dilepas saat pengajuan dikembalikan.'}`
 
   await client.query(
     `INSERT INTO cuti.leave_request_events (

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { cancelLeaveRequest } from '../cancellation.js'
 
-function createMockClient({ request, balance, days = [], stages = [] }) {
+function createMockClient({ request, balance, days = [], stages = [], latestLedgerType = 'RESERVATION' }) {
   const queries = []
   return {
     queries,
@@ -18,6 +18,10 @@ function createMockClient({ request, balance, days = [], stages = [] }) {
       }
       if (s.includes('FROM CUTI.LEAVE_REQUEST_STAGES')) {
         return { rowCount: stages.length, rows: stages }
+      }
+      // Transaksi ledger terakhir untuk request (gate anti double-release K2).
+      if (s.includes('FROM CUTI.LEAVE_BALANCE_TRANSACTIONS')) {
+        return { rowCount: 1, rows: latestLedgerType ? [{ transaction_type: latestLedgerType }] : [] }
       }
       if (s.includes('FROM CUTI.LEAVE_BALANCES') && s.includes('FOR UPDATE')) {
         return { rowCount: balance ? 1 : 0, rows: balance ? [balance] : [] }
@@ -219,6 +223,108 @@ test('cancelLeaveRequest approved cuti after 1 day used allows partial restorati
   )
   assert.ok(restoreTx)
   assert.equal(restoreTx.params[2], -3) // used_delta = -3
+})
+
+test('cancelLeaveRequest on RETURNED_FOR_REVISION does not release reservation again (audit K2)', async () => {
+  const returnedReq = {
+    id: 20,
+    request_number: 'REQ-020',
+    status: 'RETURNED_FOR_REVISION',
+    employee_user_id: 10,
+    employee_id: 5,
+    leave_type_id: 1,
+    is_annual_leave: true,
+    deducts_annual_balance: true,
+    balance_period_year: 2026,
+    requested_working_days: 3,
+  }
+  const mockBalance = { id: 70, available_days: 9, reserved_days: 0 }
+  // Reservasi sudah dilepas oleh RETURN: transaksi ledger terakhir = RELEASE.
+  const client = createMockClient({ request: returnedReq, balance: mockBalance, latestLedgerType: 'RELEASE' })
+
+  const result = await cancelLeaveRequest(client, adminUser, 20, {
+    source: 'ADMIN_INITIATED',
+    reason: 'Pembatalan pengajuan yang dikembalikan dan tidak diperbaiki pegawai',
+    effectiveDate: '2026-11-20',
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.status, 'CANCELLED')
+  // Tidak ada RELEASE baru: saldo tidak berubah.
+  assert.equal(result.balanceAfter, result.balanceBefore)
+
+  const releaseTx = client.queries.find((q) =>
+    q.sql.includes('INSERT INTO cuti.leave_balance_transactions') && q.sql.includes("'RELEASE'"),
+  )
+  assert.equal(releaseTx, undefined, 'RETURNED request must not get a second RELEASE')
+
+  const eventTx = client.queries.find((q) => q.sql.includes('INSERT INTO cuti.leave_request_events'))
+  assert.ok(eventTx, 'Cancellation event must be recorded')
+  assert.ok(eventTx.params[2].includes('sudah dilepas'), 'Event must explain reservation was already released')
+})
+
+test('cancelLeaveRequest rejects garbage effectiveDate with 400 (audit T3)', async () => {
+  const approvedReq = {
+    id: 30,
+    request_number: 'REQ-030',
+    status: 'APPROVED',
+    employee_user_id: 10,
+    employee_id: 5,
+    leave_type_id: 1,
+    is_annual_leave: true,
+    deducts_annual_balance: true,
+    balance_period_year: 2026,
+    start_date: '2026-11-16',
+    end_date: '2026-11-20',
+    requested_working_days: 5,
+    approved_working_days: 5,
+  }
+  const client = createMockClient({ request: approvedReq, latestLedgerType: 'CONSUMPTION' })
+
+  await assert.rejects(
+    () => cancelLeaveRequest(client, adminUser, 30, {
+      source: 'ADMIN_INITIATED',
+      reason: 'Menguji tanggal efektif yang bukan format tanggal sama sekali',
+      effectiveDate: 'tanggal-sampah',
+    }),
+    (err) => err.status === 400 && err.message.includes('YYYY-MM-DD'),
+  )
+  await assert.rejects(
+    () => cancelLeaveRequest(client, adminUser, 30, {
+      source: 'ADMIN_INITIATED',
+      reason: 'Menguji tanggal kalender yang tidak ada seperti 30 Februari',
+      effectiveDate: '2026-02-30',
+    }),
+    (err) => err.status === 400 && err.message.includes('tanggal kalender'),
+  )
+})
+
+test('cancelLeaveRequest rejects future effectiveDate with 400 (audit T3)', async () => {
+  const approvedReq = {
+    id: 31,
+    request_number: 'REQ-031',
+    status: 'APPROVED',
+    employee_user_id: 10,
+    employee_id: 5,
+    leave_type_id: 1,
+    is_annual_leave: true,
+    deducts_annual_balance: true,
+    balance_period_year: 2026,
+    start_date: '2026-11-16',
+    end_date: '2026-11-20',
+    requested_working_days: 5,
+    approved_working_days: 5,
+  }
+  const client = createMockClient({ request: approvedReq, latestLedgerType: 'CONSUMPTION' })
+
+  await assert.rejects(
+    () => cancelLeaveRequest(client, adminUser, 31, {
+      source: 'ADMIN_INITIATED',
+      reason: 'Menguji tanggal efektif di masa depan yang mengacaukan hitungan',
+      effectiveDate: '2099-01-01',
+    }),
+    (err) => err.status === 400 && err.message.includes('masa depan'),
+  )
 })
 
 test('cancelLeaveRequest rejects restoration exceeding max allowed (AT-018)', async () => {

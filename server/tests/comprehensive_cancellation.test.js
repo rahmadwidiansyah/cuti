@@ -8,7 +8,7 @@ import {
   cancelLeaveRequest,
 } from '../cancellation.js'
 
-function createMockClient({ request, balance, days = [], stages = [], shouldFailAt = null }) {
+function createMockClient({ request, balance, days = [], stages = [], shouldFailAt = null, latestLedgerType = 'RESERVATION' }) {
   const queries = []
   return {
     queries,
@@ -30,6 +30,10 @@ function createMockClient({ request, balance, days = [], stages = [], shouldFail
       }
       if (s.includes('FROM CUTI.LEAVE_REQUEST_STAGES')) {
         return { rowCount: stages.length, rows: stages }
+      }
+      // Transaksi ledger terakhir untuk request (gate anti double-release K2).
+      if (s.includes('FROM CUTI.LEAVE_BALANCE_TRANSACTIONS')) {
+        return { rowCount: 1, rows: latestLedgerType ? [{ transaction_type: latestLedgerType }] : [] }
       }
       if (s.includes('FROM CUTI.LEAVE_BALANCES') && s.includes('FOR UPDATE')) {
         return { rowCount: balance ? 1 : 0, rows: balance ? [balance] : [] }
@@ -356,4 +360,62 @@ test('Negative: Admin tidak dapat membatalkan pengajuannya sendiri (AT-051 negat
     }),
     (err) => err.status === 403 && err.message.includes('pengajuannya sendiri'),
   )
+})
+
+test('Audit K2: siklus RETURN -> withdraw tidak melepas reservasi dua kali', async () => {
+  // Skenario: pengajuan dikembalikan (reservasi sudah dilepas oleh RETURN,
+  // ledger terakhir = RELEASE), lalu pegawai menarik pengajuannya.
+  const returnedReq = {
+    id: 71,
+    request_number: 'REQ/2026/071',
+    status: 'RETURNED_FOR_REVISION',
+    employee_user_id: 10,
+    employee_id: 5,
+    leave_type_id: 1,
+    is_annual_leave: true,
+    deducts_annual_balance: true,
+    balance_period_year: 2026,
+    requested_working_days: 5,
+  }
+  const mockBalance = { id: 300, reserved_days: 0, available_days: 12 }
+  const client = createMockClient({ request: returnedReq, balance: mockBalance, latestLedgerType: 'RELEASE' })
+
+  const result = await withdrawLeaveRequest(client, employeeUser, 71, 'Tidak jadi memperbaiki pengajuan ini.')
+
+  assert.equal(result.success, true)
+  assert.equal(result.status, 'WITHDRAWN')
+
+  const releaseCount = client.queries.filter((q) =>
+    q.sql.includes('INSERT INTO cuti.leave_balance_transactions') && q.sql.includes("'RELEASE'"),
+  ).length
+  assert.equal(releaseCount, 0, 'RETURN already released the reservation; withdraw must not release again')
+})
+
+test('Audit K2: setelah dikirim ulang, withdraw tetap melepas reservasi attempt baru', async () => {
+  // Skenario kebalikan: RETURNED -> dikirim ulang (RESERVATION attempt 2
+  // menjadi ledger terakhir) -> withdraw harus melepas reservasi attempt 2.
+  const resubmittedReq = {
+    id: 72,
+    request_number: 'REQ/2026/072',
+    status: 'SUBMITTED',
+    employee_user_id: 10,
+    employee_id: 5,
+    leave_type_id: 1,
+    is_annual_leave: true,
+    deducts_annual_balance: true,
+    balance_period_year: 2026,
+    requested_working_days: 5,
+  }
+  const mockBalance = { id: 310, reserved_days: 5, available_days: 7 }
+  const client = createMockClient({ request: resubmittedReq, balance: mockBalance, latestLedgerType: 'RESERVATION' })
+
+  const result = await withdrawLeaveRequest(client, employeeUser, 72, 'Keperluan keluarga mendadak yang tidak bisa ditunda.')
+
+  assert.equal(result.success, true)
+
+  const releaseTx = client.queries.find((q) =>
+    q.sql.includes('INSERT INTO cuti.leave_balance_transactions') && q.sql.includes("'RELEASE'"),
+  )
+  assert.ok(releaseTx, 'Active reservation of the new attempt must be released')
+  assert.equal(releaseTx.params[2], -5)
 })

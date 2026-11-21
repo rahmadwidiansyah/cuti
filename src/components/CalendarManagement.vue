@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { confirmAction, successDialog, detailDialog } from '../sweetalert.js'
 import {
   CalendarDays,
   ChevronLeft,
@@ -16,6 +17,12 @@ const props = defineProps({
 
 const canManageCalendar = computed(() =>
   props.userRoles.some((role) => role.code === 'ADMIN' || role.code === 'HR_ANALYST')
+)
+
+// Daftar "Tanggal khusus terbaru" hanya untuk Admin — non-admin & SDM melihat
+// detail tanggal lewat popup pada sel kalender.
+const isAdminUser = computed(() =>
+  props.userRoles.some((role) => role.code === 'ADMIN')
 )
 
 const today = new Date()
@@ -100,12 +107,45 @@ function dateTypeShortLabel(type) {
   return category.name.length > 10 ? category.name.slice(0, 9) + '…' : category.name
 }
 function dateTypeColor(type) {
-  return categoryMap.value.get(type)?.color || '#6c757d'
+  return categoryMap.value.get(type)?.color || '#5a6f78'
 }
 function cellStyle(special) {
   if (!special) return {}
   const color = dateTypeColor(special.type)
   return { '--cell-color': color, '--cell-soft': `${color}1f` }
+}
+
+function formatLongDate(value) {
+  const date = new Date(`${String(value).slice(0, 10)}T12:00:00Z`)
+  if (Number.isNaN(date.valueOf())) return String(value)
+  return new Intl.DateTimeFormat('id-ID', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
+  }).format(date)
+}
+
+// Popup detail tanggal ber-acara (klik sel kalender). Isi di-escape karena
+// judul dan kategori adalah data yang diinput pengguna.
+function showDateDetail(cell) {
+  const special = cell?.special
+  if (!special) return
+  const safe = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ))
+  const behavior = behaviorLabel[special.behavior] || special.behavior
+  const hint = behaviorHint[special.behavior] || ''
+  const scope = !special.scopeType || special.scopeType === 'ALL' ? 'Semua unit' : 'Unit tertentu'
+  detailDialog({
+    title: formatLongDate(cell.date),
+    html: [
+      `<p class="cal-detail-name">${safe(special.title)}</p>`,
+      '<dl class="cal-detail">',
+      `<div><dt>Kategori</dt><dd>${safe(special.name || '-')}</dd></div>`,
+      `<div><dt>Perilaku</dt><dd>${safe(behavior)}</dd></div>`,
+      ...(hint ? [`<div><dt>Keterangan</dt><dd>${safe(hint)}</dd></div>`] : []),
+      `<div><dt>Cakupan</dt><dd>${safe(scope)}</dd></div>`,
+      '</dl>',
+    ].join(''),
+  })
 }
 
 function versionLabel(status) {
@@ -166,9 +206,15 @@ async function api(path, options = {}) {
 async function loadCalendar() {
   loading.value = true
   try {
+    // Audit T9: pegawai memakai jalur baca /calendar (versi ACTIVE otomatis,
+    // cakupan unitnya); pengelola memakai /admin/calendar penuh.
+    const base = canManageCalendar.value ? '/admin/calendar' : '/calendar'
+    const gridQuery = canManageCalendar.value
+      ? `versionId=${filters.versionId}&year=${filters.year}&month=${filters.month}`
+      : `year=${filters.year}&month=${filters.month}`
     const requests = [
-      api(`/admin/calendar/grid?versionId=${filters.versionId}&year=${filters.year}&month=${filters.month}`),
-      filters.versionId
+      api(`${base}/grid?${gridQuery}`),
+      canManageCalendar.value && filters.versionId
         ? api(`/admin/calendar?versionId=${filters.versionId}&limit=${recentLimit.value}&status=active`)
         : Promise.resolve({ items: [] }),
     ]
@@ -197,6 +243,20 @@ async function saveCategory() {
   if (!behaviors.includes(categoryForm.behavior)) { categoryError.value = 'Pilih perilaku kategori.'; return }
   if (!/^#[0-9A-Fa-f]{6}$/.test(categoryForm.color)) { categoryError.value = 'Warna harus berupa kode hex #RRGGBB.'; return }
 
+  const wasEdit = Boolean(categoryForm.id)
+  const ok = await confirmAction(wasEdit
+    ? {
+        title: 'Simpan perubahan kategori?',
+        text: 'Perubahan perilaku kategori berlaku untuk pengajuan baru.',
+        confirmText: 'Ya, simpan',
+      }
+    : {
+        title: 'Tambah kategori kalender baru?',
+        text: 'Kategori dipakai untuk menghitung hari kerja pada pengajuan cuti.',
+        confirmText: 'Ya, simpan',
+        icon: 'info',
+      })
+  if (!ok) return
   savingCategory.value = true
   try {
     const body = {
@@ -212,6 +272,10 @@ async function saveCategory() {
     }
     resetCategoryForm()
     await loadCalendar()
+    await successDialog({
+      title: 'Kategori tersimpan',
+      text: wasEdit ? 'Perubahan kategori berhasil disimpan.' : 'Kategori baru berhasil ditambahkan.',
+    })
   } catch (cause) {
     categoryError.value = errorText(cause)
   } finally {
@@ -247,7 +311,13 @@ function resetCategoryForm() {
 
 async function deleteCategory(item) {
   categoryError.value = ''
-  if (!window.confirm(`Hapus kategori "${item.name}"?`)) return
+  const ok = await confirmAction({
+    title: `Hapus kategori "${item.name}"?`,
+    text: 'Kategori yang dihapus tidak dapat dikembalikan.',
+    confirmText: 'Ya, hapus',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api(`/admin/calendar/categories/${item.id}`, { method: 'DELETE' })
     notice.value = 'Kategori berhasil dihapus.'
@@ -259,11 +329,15 @@ async function deleteCategory(item) {
 }
 
 async function loadLookups() {
-  versions.value = (await api('/admin/calendar/versions')).items || []
-  try {
-    const empResult = await api('/admin/employees?limit=1')
-    units.value = empResult.units || []
-  } catch (_) { units.value = [] }
+  // Audit T9: pegawai hanya menerima versi ACTIVE dari jalur /calendar.
+  const base = canManageCalendar.value ? '/admin/calendar' : '/calendar'
+  versions.value = (await api(`${base}/versions`)).items || []
+  if (canManageCalendar.value) {
+    try {
+      const empResult = await api('/admin/employees?limit=1')
+      units.value = empResult.units || []
+    } catch (_) { units.value = [] }
+  }
   setDefaultVersion()
 }
 
@@ -330,6 +404,20 @@ async function saveCalendar() {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(form.calendarDate)) { formError.value = 'Tanggal tidak valid (YYYY-MM-DD).'; return }
   if (form.title.length < 3 || form.title.length > 150) { formError.value = 'Judul 3–150 karakter.'; return }
 
+  const wasEdit = Boolean(editingId.value)
+  const ok = await confirmAction(wasEdit
+    ? {
+        title: 'Simpan perubahan tanggal kalender?',
+        text: 'Perubahan berlaku untuk penghitungan pengajuan cuti baru.',
+        confirmText: 'Ya, simpan',
+      }
+    : {
+        title: 'Tambah tanggal kalender kerja?',
+        text: 'Tanggal libur/kerja memengaruhi perhitungan durasi cuti pegawai.',
+        confirmText: 'Ya, simpan',
+        icon: 'info',
+      })
+  if (!ok) return
   saving.value = true
   try {
     const body = {
@@ -351,6 +439,10 @@ async function saveCalendar() {
     }
     resetForm()
     await loadCalendar()
+    await successDialog({
+      title: 'Tanggal kalender tersimpan',
+      text: wasEdit ? 'Perubahan tanggal kalender berhasil disimpan.' : 'Tanggal kalender baru berhasil ditambahkan.',
+    })
   } catch (cause) {
     formError.value = errorText(cause)
   } finally {
@@ -359,6 +451,20 @@ async function saveCalendar() {
 }
 
 async function toggleActive(item) {
+  const ok = await confirmAction(item.is_active
+    ? {
+        title: 'Nonaktifkan tanggal kalender ini?',
+        text: 'Tanggal nonaktif tidak dihitung untuk pengajuan cuti baru. Riwayat pengajuan yang sudah dibuat tidak berubah.',
+        confirmText: 'Ya, nonaktifkan',
+        danger: true,
+      }
+    : {
+        title: 'Aktifkan tanggal kalender ini?',
+        text: 'Tanggal aktif kembali dihitung untuk pengajuan cuti baru.',
+        confirmText: 'Ya, aktifkan',
+        icon: 'info',
+      })
+  if (!ok) return
   busyId.value = item.id
   try {
     await api(`/admin/calendar/${encodeURIComponent(item.id)}/toggle`, {
@@ -399,6 +505,12 @@ async function previewImport(file) {
 
 async function commitImport() {
   if (!importPreview.value || !importPreview.value.rows?.length) return
+  const ok = await confirmAction({
+    title: `Impor ${importPreview.value.rows.length} tanggal kalender?`,
+    text: 'Tanggal diimpor ke versi kalender terpilih dan langsung dipakai untuk perhitungan cuti.',
+    confirmText: 'Ya, impor',
+  })
+  if (!ok) return
   importing.value = true
   try {
     const result = await api('/admin/calendar/import/commit', {
@@ -409,6 +521,10 @@ async function commitImport() {
     showImportModal.value = false
     importPreview.value = null
     await loadCalendar()
+    await successDialog({
+      title: 'Impor selesai',
+      text: `${result.imported || 0} tanggal kalender berhasil diimpor.`,
+    })
   } catch (cause) {
     importErrors.value = [{ error: errorText(cause) }]
   } finally {
@@ -490,6 +606,9 @@ onMounted(initialize)
               }"
               :style="cellStyle(cell.special)"
               :aria-label="`${formatDate(cell.date)}${cell.special ? ', ' + cell.special.title : ''}${cell.isToday ? ', hari ini' : ''}`"
+              :tabindex="cell.special ? 0 : -1"
+              @click="showDateDetail(cell)"
+              @keydown.enter.prevent="showDateDetail(cell)"
             >
               <div class="calendar-cell-top">
                 <span class="calendar-day-number">{{ dayNumber(cell.date) }}</span>
@@ -521,7 +640,7 @@ onMounted(initialize)
         </div>
       </section>
 
-        <section class="panel calendar-recent-panel">
+        <section v-if="isAdminUser" class="panel calendar-recent-panel">
           <div class="calendar-panel-heading">
             <h2>Tanggal khusus terbaru</h2>
             <button
@@ -769,7 +888,7 @@ onMounted(initialize)
             :disabled="!importPreview?.rows?.length || importing"
             @click="commitImport"
           >
-            <Upload :size="14" aria-hidden="true" /> {{ importing ? 'Mengimpor…' : 'Kommit impor' }}
+            <Upload :size="14" aria-hidden="true" /> {{ importing ? 'Mengimpor…' : 'Konfirmasi impor' }}
           </button>
         </div>
       </div>
@@ -787,7 +906,7 @@ onMounted(initialize)
 }
 .calendar-layout-solo { grid-template-columns: minmax(0, 1fr); }
 
-@media (max-width: 1280px) {
+@media (max-width: 1200px) {
   .calendar-layout { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
@@ -835,11 +954,11 @@ onMounted(initialize)
   color: var(--muted);
   cursor: pointer;
 }
-.calendar-icon-button:hover { background: var(--border); color: var(--ink); }
+.calendar-icon-button:hover { background: var(--subtle); color: var(--ink); }
 
 .calendar-month {
   margin: 0 4px;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--ink);
   white-space: nowrap;
@@ -878,7 +997,7 @@ onMounted(initialize)
   white-space: nowrap;
 }
 .calendar-legend strong { color: var(--text); font-weight: 600; }
-.calendar-legend small { color: var(--muted); font-size: 9.5px; }
+.calendar-legend small { color: var(--muted); font-size: 10px; }
 .legend-dot {
   width: 8px;
   height: 8px;
@@ -923,14 +1042,14 @@ onMounted(initialize)
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #ffffff;
+  background: var(--card);
   color: var(--text);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  transition: box-shadow 120ms ease;
+  transition: border-color 120ms ease-out;
 }
-.calendar-cell:hover { box-shadow: 0 2px 8px rgba(20, 47, 58, 0.08); }
+.calendar-cell:hover { border-color: var(--control-border); }
 
 .calendar-cell-top {
   display: flex;
@@ -956,21 +1075,26 @@ onMounted(initialize)
 }
 
 .calendar-cell.is-outside {
-  background: #f3f6fa;
+  background: var(--page);
   color: var(--muted);
 }
 .calendar-cell.is-weekend {
-  background: #f7f9fc;
-  border-color: #edf2f7;
+  background: var(--subtle);
+  border-color: var(--divider);
   color: var(--muted);
 }
 .calendar-cell.has-special {
   background: var(--cell-soft);
   border-color: var(--cell-color);
   color: var(--cell-color);
+  cursor: pointer;
+}
+.calendar-cell.has-special:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 .calendar-cell.is-today {
-  background: #ffffff;
+  background: var(--card);
   border-color: var(--primary);
   color: var(--primary);
 }
@@ -1023,7 +1147,7 @@ onMounted(initialize)
 .manage-tab.active { border-bottom-color: var(--primary); color: var(--primary); background: var(--card); }
 .manage-tab-content { padding: 20px; }
 .manage-tab-content .calendar-panel-heading { margin-bottom: 14px; }
-.manage-tab-content .calendar-panel-heading h2 { font-size: 14px; }
+.manage-tab-content .calendar-panel-heading h2 { font-size: 16px; }
 
 .calendar-panel-heading {
   display: flex;
@@ -1034,7 +1158,7 @@ onMounted(initialize)
 }
 .calendar-panel-heading h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--ink);
 }
@@ -1057,13 +1181,6 @@ onMounted(initialize)
   background: var(--card);
 }
 .calendar-form .field textarea { height: auto; min-height: 68px; padding: 10px 12px; resize: vertical; }
-.calendar-form .field input:focus,
-.calendar-form .field select:focus,
-.calendar-form .field textarea:focus {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12);
-}
 .calendar-form .field label { margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--text); }
 
 .calendar-input-icon { position: relative; }
@@ -1072,7 +1189,7 @@ onMounted(initialize)
   left: 12px;
   top: 50%;
   transform: translateY(-50%);
-  color: #6e8590;
+  color: var(--muted);
   pointer-events: none;
 }
 .calendar-input-icon input { padding-left: 36px !important; }
@@ -1110,7 +1227,7 @@ onMounted(initialize)
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #ffffff;
+  background: var(--card);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
   transition: transform 120ms ease;
 }
@@ -1181,21 +1298,22 @@ onMounted(initialize)
 .calendar-recent-title svg { flex: 0 0 auto; opacity: 0.6; }
 
 .calendar-recent-badge {
-  height: 20px;
-  padding: 0 10px;
-  border-radius: 10px;
+  min-height: 22px;
+  padding: 3px 8px;
+  border-radius: 999px;
   border: 1px solid transparent;
   display: inline-flex;
   align-items: center;
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 650;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 /* Kelola kategori */
 .calendar-category-intro { margin: 0 0 18px; color: var(--text); font-size: 12px; line-height: 1.6; }
 .category-form { padding: 16px; margin-bottom: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--subtle); }
-.category-hint { display: block; margin-top: 6px; color: #4a5f68; font-size: 11px; }
+.category-hint { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; }
 .category-color-field { display: flex; align-items: center; gap: 12px; }
 .category-color-field input[type="color"] { width: 48px; height: 44px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); cursor: pointer; }
 .category-color-field input[type="text"] { flex: 1; min-width: 0; height: 44px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); font-size: 13px; }
@@ -1205,13 +1323,13 @@ onMounted(initialize)
 .category-swatch { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 3px; }
 .category-info { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .category-info strong { color: var(--ink); font-size: 12.5px; font-weight: 600; }
-.category-info small { color: #4a5f68; font-size: 10.5px; }
-.category-lock { padding: 3px 8px; border-radius: 8px; background: var(--subtle); color: #4a5f68; font-size: 10px; font-weight: 600; }
+.category-info small { color: var(--muted); font-size: 10.5px; }
+.category-lock { padding: 3px 8px; border-radius: var(--radius-control); background: var(--subtle); color: var(--muted); font-size: 10px; font-weight: 600; }
 .category-actions { display: flex; gap: 2px; flex: 0 0 auto; }
-.category-action { width: 44px; height: 44px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
-.category-action:hover { background: var(--border); color: var(--ink); }
+.category-action { width: 44px; height: 44px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--muted); cursor: pointer; }
+.category-action:hover { background: var(--subtle); color: var(--ink); }
 .category-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.category-action-danger:hover { background: #fde9e9; color: #a11d1d; }
+.category-action-danger:hover { background: var(--danger-bg); color: var(--danger-text); }
 
 .import-hint { margin: 0 0 8px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .import-hint code { font-size: 11px; }
@@ -1219,6 +1337,29 @@ onMounted(initialize)
 .import-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .import-table th,
 .import-table td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border); }
-.import-table th { color: var(--ink); font-weight: 600; }
+.import-table th { color: var(--muted); font-weight: 700; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; }
 .import-dup { background: var(--warning-bg); }
+
+/* Mobile diletakkan paling akhir agar mengalahkan aturan dasar di atasnya
+   (specificity sama, CSS terakhir yang menang). Sel dimampukkan supaya angka
+   dan tag ("Libur"/"Hari ini") tidak terpotong pada lebar 7 kolom ponsel. */
+@media (max-width: 640px) {
+  .calendar-panel { padding: 14px; }
+  .calendar-weekdays,
+  .calendar-grid { gap: 4px; }
+  .calendar-cell {
+    aspect-ratio: auto;
+    min-height: 48px;
+    padding: 5px 4px;
+  }
+  .calendar-day-number { font-size: 11px; }
+  .calendar-cell-month { display: none; }
+  .calendar-cell-tag {
+    max-width: 100%;
+    font-size: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
 </style>

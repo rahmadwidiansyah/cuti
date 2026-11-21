@@ -7,7 +7,6 @@ import {
   CalendarCheck,
   CalendarClock,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Eye,
   Save,
@@ -17,6 +16,10 @@ import {
   Clock,
   History,
 } from 'lucide-vue-next'
+import StatusPill from './StatusPill.vue'
+import TablePager from './TablePager.vue'
+import { statusLabel } from '../status.js'
+import { confirmAction, successDialog } from '../sweetalert.js'
 const emit = defineEmits(['open-request'])
 
 const loading = ref(false)
@@ -32,7 +35,7 @@ const year = ref(new Date().getFullYear())
 const draft = reactive({ q: '', unitId: '', category: '', leaveStatus: '' })
 const applied = reactive({ q: '', unitId: '', category: '', leaveStatus: '' })
 const page = ref(0)
-const pageSize = 6
+const pageSize = 20
 
 const selectedEmployeeId = ref(null)
 const detail = ref(null)
@@ -46,15 +49,6 @@ const allocateForm = reactive({ days: 12, reason: 'Alokasi awal kuota cuti tahun
 const leaveHistory = ref([])
 const leaveHistoryLoading = ref(false)
 
-const leaveStatusLabel = { ON_LEAVE: 'Sedang cuti', UPCOMING: 'Cuti berikutnya', NONE: 'Tidak cuti' }
-const statusLabel = (status) => ({
-  DRAFT: 'Draf', SUBMITTED: 'Menunggu verifikasi', ADMIN_REVIEW: 'Menunggu verifikasi',
-  ADMIN_VERIFIED: 'Terverifikasi', PERTIMBANGAN_REVIEW: 'Pertimbangan SDM',
-  KASUBAG_REVIEW: 'Antrean Kasubag', KEPSTA_REVIEW: 'Antrean Kepsta',
-  PPK_REVIEW: 'Antrean PPK', RETURNED_FOR_REVISION: 'Dikembalikan',
-  APPROVED: 'Disetujui', REJECTED: 'Ditolak', WITHDRAWN: 'Dibatalkan pegawai',
-  CANCELLED: 'Dibatalkan Admin'
-})[status] || status || '—'
 const categoryLabel = {
   PNS_TU: 'PNS · TU',
   PNS: 'PNS · non-TU',
@@ -85,10 +79,7 @@ const filtered = computed(() => {
     return true
   })
 })
-const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
 const paged = computed(() => filtered.value.slice(page.value * pageSize, (page.value + 1) * pageSize))
-const firstShown = computed(() => filtered.value.length ? page.value * pageSize + 1 : 0)
-const lastShown = computed(() => Math.min((page.value + 1) * pageSize, filtered.value.length))
 
 const balance = computed(() => detail.value?.balance || null)
 const canAdjust = computed(() => Boolean(detail.value?.canAdjust))
@@ -275,10 +266,6 @@ async function changeYear(event) {
   if (selectedEmployeeId.value) await loadDetail()
 }
 
-function changePage(delta) {
-  page.value = Math.min(Math.max(page.value + delta, 0), totalPages.value - 1)
-}
-
 async function openDetail(item) {
   selectedEmployeeId.value = item.employeeId
   detail.value = null
@@ -316,6 +303,12 @@ async function submitAdjustment() {
     detailError.value = adjustmentHint.value || 'Periksa kembali isian penyesuaian.'
     return
   }
+  const ok = await confirmAction({
+    title: 'Simpan penyesuaian saldo ini?',
+    text: `Saldo ${detail.value?.employee?.fullName || 'pegawai'} ${deltaNumber.value > 0 ? 'bertambah' : 'berkurang'} ${Math.abs(deltaNumber.value)} hari dan tercatat pada riwayat transaksi.`,
+    confirmText: 'Ya, simpan',
+  })
+  if (!ok) return
   adjustForm.submitting = true
   try {
     const result = await api(`/admin/balances/${selectedEmployeeId.value}/adjustment`, {
@@ -331,6 +324,10 @@ async function submitAdjustment() {
     notice.value = result.message || 'Penyesuaian kuota tersimpan.'
     Object.assign(adjustForm, { deltaDays: '', reason: '', reference: '', submitting: false })
     await Promise.all([loadDetail(), load()])
+    await successDialog({
+      title: 'Penyesuaian tersimpan',
+      text: result.message || 'Penyesuaian kuota tercatat pada riwayat transaksi saldo.',
+    })
   } catch (cause) {
     detailError.value = cause instanceof Error ? cause.message : 'Gagal menyimpan penyesuaian.'
   } finally {
@@ -346,6 +343,12 @@ async function submitAllocation() {
     detailError.value = 'Jumlah hari alokasi harus bilangan bulat antara 1 dan 365.'
     return
   }
+  const ok = await confirmAction({
+    title: 'Alokasikan saldo tahunan ini?',
+    text: `${allocateForm.days} hari saldo dialokasikan untuk ${detail.value?.employee?.fullName || 'pegawai'} pada tahun ${year.value}.`,
+    confirmText: 'Ya, alokasikan',
+  })
+  if (!ok) return
   allocateForm.submitting = true
   try {
     const result = await api(`/admin/balances/${selectedEmployeeId.value}/allocation`, {
@@ -358,38 +361,15 @@ async function submitAllocation() {
     })
     notice.value = result.message || 'Saldo berhasil dialokasikan.'
     await Promise.all([loadDetail(), load()])
+    await successDialog({
+      title: 'Alokasi tersimpan',
+      text: result.message || 'Saldo tahunan berhasil dialokasikan.',
+    })
   } catch (cause) {
     detailError.value = cause instanceof Error ? cause.message : 'Gagal mengalokasikan saldo.'
   } finally {
     allocateForm.submitting = false
   }
-}
-
-function exportCsv() {
-  const rows = [
-    ['ID pegawai', 'Nama pegawai', 'Kategori', 'Unit kerja', 'Periode', 'Kuota awal', 'Penyesuaian', 'Carry-over', 'Terpakai', 'Reservasi', 'Sisa tahunan', 'Pemakaian sakit', 'Pemakaian alasan penting', 'Status cuti', 'Cuti aktif atau berikutnya'],
-    ...filtered.value.map(item => [
-      item.identity, item.fullName, categoryLabel[item.category] || item.category, item.unitName || '',
-      item.balanceId ? (item.periodYear ?? year.value) : year.value,
-      item.balanceId ? item.allocatedDays ?? '-' : '-',
-      item.balanceId ? item.adjustmentDays ?? '-' : '-',
-      item.balanceId ? item.carryOverDays ?? '-' : '-',
-      item.balanceId ? item.usedDays ?? '-' : '-',
-      item.balanceId ? item.reservedDays ?? '-' : '-',
-      item.balanceId ? item.availableDays ?? '-' : '-',
-      item.sickDaysUsed ?? '-', item.importantReasonDaysUsed ?? '-',
-      leaveStatusLabel[item.leaveStatus] || item.leaveStatus || '', formatRange(item),
-    ]),
-  ]
-  const csv = rows.map(row => row.map(value => `"${String(value ?? '').replaceAll('"', '""')}"`).join(',')).join('\r\n')
-  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `direktori-pegawai-${year.value}.csv`
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
 }
 
 function onKeydown(event) {
@@ -401,8 +381,6 @@ onMounted(() => {
   window.addEventListener('keydown', onKeydown)
 })
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
-
-defineExpose({ exportCsv })
 </script>
 
 <template>
@@ -482,7 +460,7 @@ defineExpose({ exportCsv })
         <button class="button button-quiet" type="button" @click="resetFilters">Reset</button>
       </form>
 
-      <section class="ad-table-panel" aria-label="Daftar pegawai dan saldo cuti">
+      <section class="ad-table-panel panel-flex" aria-label="Daftar pegawai dan saldo cuti">
         <table class="ad-table">
           <thead>
             <tr>
@@ -522,9 +500,7 @@ defineExpose({ exportCsv })
               <td>{{ item.sickDaysUsed ?? '-' }} hari</td>
               <td>{{ item.importantReasonDaysUsed ?? '-' }} hari</td>
               <td>
-                <span class="ad-status" :class="`ad-status-${String(item.leaveStatus).toLowerCase()}`">
-                  {{ leaveStatusLabel[item.leaveStatus] || '-' }}
-                </span>
+                <StatusPill :status="item.leaveStatus" />
               </td>
               <td><span class="ad-leave-range">{{ formatRange(item) }}</span></td>
               <td>
@@ -545,9 +521,7 @@ defineExpose({ exportCsv })
                 <small>{{ item.identity || 'NIP tidak tersedia' }}</small>
                 <small>{{ categoryLabel[item.category] || item.category }} · {{ item.unitName || 'Unit tidak tersedia' }}</small>
               </div>
-              <span class="ad-status" :class="`ad-status-${String(item.leaveStatus).toLowerCase()}`">
-                {{ leaveStatusLabel[item.leaveStatus] || '-' }}
-              </span>
+              <StatusPill :status="item.leaveStatus" />
             </div>
             <dl class="ad-card-facts">
               <div><dt>Kuota</dt><dd>{{ item.balanceId ? `${num(item.allocatedDays)} hari` : '—' }}</dd></div>
@@ -565,26 +539,7 @@ defineExpose({ exportCsv })
         <p v-if="!paged.length && !loading" class="ad-empty">
           {{ items.length ? 'Tidak ada pegawai yang cocok dengan filter ini. Ubah filter atau tekan Reset.' : 'Belum ada data pegawai dalam lingkup akses Anda.' }}
         </p>
-        <footer class="ad-pagination">
-          <span>Menampilkan {{ firstShown }}-{{ lastShown }} dari {{ filtered.length }} pegawai</span>
-          <div>
-            <button class="ad-page-button" type="button" aria-label="Halaman sebelumnya" :disabled="page === 0" @click="changePage(-1)">
-              <ChevronLeft :size="14" aria-hidden="true" />
-            </button>
-            <button
-              v-for="n in totalPages"
-              :key="n"
-              class="ad-page-button"
-              :class="{ active: page === n - 1 }"
-              type="button"
-              :aria-label="`Halaman ${n}`"
-              @click="page = n - 1"
-            >{{ n }}</button>
-            <button class="ad-page-button" type="button" aria-label="Halaman berikutnya" :disabled="page >= totalPages - 1" @click="changePage(1)">
-              <ChevronRight :size="14" aria-hidden="true" />
-            </button>
-          </div>
-        </footer>
+        <TablePager :page="page" :total="filtered.length" :page-size="pageSize" label="pegawai" @change="p => page = p" />
       </section>
     </template>
 
@@ -616,12 +571,8 @@ defineExpose({ exportCsv })
             <p v-if="detail.employee.teamNames">Tim kerja: {{ detail.employee.teamNames }}</p>
           </div>
           <div class="ad-person-badges">
-            <span class="ad-badge" :class="detail.employee.employmentStatus === 'ACTIVE' ? 'ad-badge-success' : 'ad-badge-neutral'">
-              {{ detail.employee.employmentStatus === 'ACTIVE' ? 'Aktif' : 'Nonaktif' }}
-            </span>
-            <span class="ad-status" :class="`ad-status-${String(detail.employee.leaveStatus).toLowerCase()}`">
-              {{ leaveStatusLabel[detail.employee.leaveStatus] || '-' }}
-            </span>
+            <StatusPill :status="detail.employee.employmentStatus === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE'" />
+            <StatusPill :status="detail.employee.leaveStatus" />
           </div>
         </section>
 
@@ -726,9 +677,7 @@ defineExpose({ exportCsv })
                   <div class="ad-history-main">
                     <div class="ad-history-header">
                       <strong>{{ req.requestNumber }}</strong>
-                      <span class="ad-history-status" :class="`ad-status-${String(req.status).toLowerCase()}`">
-                        {{ statusLabel(req.status) }}
-                      </span>
+                      <StatusPill :status="req.status" />
                     </div>
                     <div class="ad-history-meta">
                       <span><FileText :size="12" /> {{ req.leaveTypeName }}</span>
@@ -757,9 +706,7 @@ defineExpose({ exportCsv })
                 </div>
               </header>
               <div class="ad-leave-summary">
-                <span class="ad-status" :class="`ad-status-${String(detail.employee.leaveStatus).toLowerCase()}`">
-                  {{ leaveStatusLabel[detail.employee.leaveStatus] || '-' }}
-                </span>
+                <StatusPill :status="detail.employee.leaveStatus" />
                 <strong v-if="detail.employee.currentLeave">{{ formatRange(detail.employee) }}</strong>
                 <p v-else>Tidak ada cuti aktif atau berikutnya.</p>
                 <small v-if="detail.employee.currentLeave">{{ detail.employee.currentLeave.requestNumber }}</small>
@@ -880,70 +827,63 @@ defineExpose({ exportCsv })
 
 <style scoped>
 .admin-directory {
-  --ink: #142f3a;
-  --text: #3d525c;
-  --muted: #5a6f78;
-  --border: #e1e9f1;
-  --divider: #edf2f7;
-  --blue: #0d6efd;
   display: grid;
   gap: 20px;
   min-width: 0;
 }
 
-.ad-error { margin: 0; padding: 12px 16px; border-radius: 10px; background: #fde9e9; color: #a11d1d; font-size: 13px; }
+.ad-error { margin: 0; padding: 12px 14px; border: 1px solid var(--danger-border); border-radius: var(--radius-control); background: var(--danger-bg); color: var(--danger-text); font-size: 13px; }
 .ad-loading { margin: 0; color: var(--muted); font-size: 13px; }
 
 .ad-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .ad-metric {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
-  min-height: 72px; padding: 12px 16px;
-  border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  min-height: 96px; padding: 16px;
+  border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card);
 }
 .ad-metric p { margin: 0 0 2px; color: var(--muted); font-size: 10.5px; font-weight: 500; }
-.ad-metric strong { color: var(--ink); font-size: 26px; font-weight: 700; line-height: 1.15; }
+.ad-metric strong { color: var(--ink); font-size: 26px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
 .ad-metric strong span { color: var(--muted); font-size: 10.5px; font-weight: 500; }
 .ad-metric small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
 .ad-icon { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
-.tone-blue { background: #e9f1ff; color: #1b4fbf; }
-.tone-red { background: #fde9e9; color: #a11d1d; }
-.tone-green { background: #e4f7ec; color: #0b6b45; }
-.tone-amber { background: #fff6de; color: #8a5a00; }
-.tone-teal { background: #e3f4f1; color: #0a6b60; }
-.tone-success { background: #e4f7ec; color: #0b6b45; }
-.tone-danger { background: #fde9e9; color: #a11d1d; }
-.tone-neutral { background: #edf2f6; color: #5a6f78; }
+.tone-blue { background: var(--info-bg); color: var(--info-text); }
+.tone-red { background: var(--danger-bg); color: var(--danger-text); }
+.tone-green { background: var(--success-bg); color: var(--success-text); }
+.tone-amber { background: var(--warning-bg); color: var(--warning-text); }
+.tone-teal { background: var(--teal-bg); color: var(--teal-text); }
+.tone-success { background: var(--success-bg); color: var(--success-text); }
+.tone-danger { background: var(--danger-bg); color: var(--danger-text); }
+.tone-neutral { background: var(--neutral-bg); color: var(--muted); }
 
 .ad-filters {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
-  padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+  padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--subtle);
 }
 .ad-filters > label { min-width: 0; position: relative; }
 .ad-search {
   display: flex; align-items: center; gap: 8px;
   width: 260px; height: 40px; padding: 0 12px;
-  border: 1px solid #8494a1; border-radius: 8px; color: #6e8590; background: #fff;
+  border: 1px solid var(--control-border); border-radius: var(--radius-control); color: var(--muted); background: var(--card);
 }
-.ad-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; }
-.ad-search:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12); }
+.ad-search input { width: 100%; border: 0; background: transparent; color: var(--text); font-size: 13px; }
 .ad-select { display: inline-flex; align-items: center; }
 .ad-select select {
   width: 145px; height: 40px; padding: 0 32px 0 12px;
-  border: 1px solid #8494a1; border-radius: 8px; background: #fff;
+  border: 1px solid var(--control-border); border-radius: var(--radius-control); background: var(--card);
   color: var(--text); font-size: 13px; appearance: none; cursor: pointer;
 }
 .ad-year select { width: 120px; }
-.ad-select svg { position: absolute; right: 10px; color: #6e8590; pointer-events: none; }
+.ad-select svg { position: absolute; right: 10px; color: var(--muted); pointer-events: none; }
 .ad-filters .button { min-height: 40px; }
 
 .ad-table-panel {
-  min-width: 0; border: 1px solid var(--border); border-radius: 12px;
-  background: #fff; overflow: hidden;
+  min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-panel);
+  background: var(--card); overflow: hidden;
 }
 .ad-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .ad-table th {
   padding: 16px 16px 12px; border-bottom: 1px solid var(--border);
-  color: var(--muted); font-size: 9.5px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--muted); font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
   text-align: left; text-transform: uppercase;
 }
 .ad-table th:nth-child(1) { width: 124px; }
@@ -960,95 +900,73 @@ defineExpose({ exportCsv })
 .ad-table th:nth-child(7) { line-height: 1.35; }
 .ad-table td {
   padding: 12px 16px; border-bottom: 1px solid var(--divider);
-  color: var(--text); font-size: 10.5px; vertical-align: middle;
+  color: var(--text); font-size: 12px; vertical-align: middle;
 }
-.ad-identity { color: var(--text); font-size: 10px; font-weight: 600; white-space: nowrap; }
+.ad-identity { color: var(--text); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .ad-person { display: flex; align-items: center; gap: 10px; }
 .ad-avatar {
   width: 28px; height: 28px; flex: 0 0 auto; border-radius: 50%;
-  background: #e9f1ff; color: #0b5ed7;
-  display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600;
+  background: var(--info-bg); color: var(--primary-dark);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;
 }
 .ad-avatar-lg { width: 44px; height: 44px; font-size: 14px; }
 .ad-person strong { display: block; color: var(--ink); font-size: 11px; font-weight: 600; }
-.ad-person small { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
+.ad-person small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 .ad-days { display: block; color: var(--ink); font-size: 11px; font-weight: 600; }
-.ad-days-note { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
+.ad-days-note { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 .ad-available { color: var(--ink); font-weight: 650; }
-.ad-available-empty { color: #a11d1d; }
-.ad-positive { color: #0b6b45; }
-.ad-negative { color: #a11d1d; }
-.ad-status {
-  display: inline-flex; align-items: center; height: 22px; padding: 0 10px;
-  border: 1px solid transparent; border-radius: 11px; font-size: 9px; font-weight: 600;
-  white-space: nowrap;
-}
-.ad-status-on_leave { background: #fff6de; border-color: #f2d79a; color: #8a5a00; }
-.ad-status-upcoming { background: #e9f1ff; border-color: #c9dafb; color: #1b4fbf; }
-.ad-status-none { background: #edf2f6; border-color: #d8e2ea; color: var(--text); }
+.ad-available-empty { color: var(--danger-text); }
+.ad-positive { color: var(--success-text); }
+.ad-negative { color: var(--danger-text); }
 .ad-badge {
-  display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px;
-  border-radius: 999px; font-size: 9.5px; font-weight: 600; white-space: nowrap;
-  background: #fff6de; color: #8a5a00;
+  display: inline-flex; align-items: center; min-height: 22px; padding: 3px 8px;
+  border: 1px solid var(--warning-border); border-radius: 999px; font-size: 10px; font-weight: 650;
+  letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap;
+  background: var(--warning-bg); color: var(--warning-text);
 }
-.ad-badge-success { background: #e4f7ec; color: #0b6b45; }
-.ad-badge-neutral { background: #edf2f6; color: #5a6f78; }
 .ad-leave-range {
   display: inline-flex; align-items: center; height: 22px; padding: 0 10px;
-  border: 1px solid var(--border); border-radius: 11px; background: #fff;
-  color: var(--text); font-size: 9px; font-weight: 600; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--card);
+  color: var(--text); font-size: 10px; font-weight: 600; white-space: nowrap;
 }
 .ad-icon-button {
   width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer;
+  border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text); cursor: pointer;
 }
-.ad-icon-button:hover { background: var(--divider); }
+.ad-icon-button:hover { background: var(--subtle); }
 .ad-empty { margin: 0; padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px; }
-.ad-pagination {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 12px 20px; color: var(--muted); font-size: 11px;
-}
-.ad-pagination > div { display: flex; gap: 4px; }
-.ad-page-button {
-  min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: 8px;
-  background: transparent; color: var(--muted); font-size: 11px; cursor: pointer;
-}
-.ad-page-button.active { background: #e9f1ff; color: #0b5ed7; font-weight: 600; }
-.ad-page-button:hover:not(:disabled):not(.active) { background: var(--divider); }
-.ad-page-button:disabled { opacity: 0.45; cursor: not-allowed; }
-
 .ad-cards { display: none; }
 .ad-card {
   display: grid; gap: 10px; padding: 14px;
-  border: 1px solid var(--border); border-radius: 10px; background: #fff;
+  border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card);
 }
 .ad-card-head { display: flex; align-items: flex-start; gap: 10px; }
 .ad-card-person { flex: 1 1 auto; min-width: 0; }
 .ad-card-person strong { display: block; color: var(--ink); font-size: 12.5px; font-weight: 650; }
 .ad-card-person small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
-.ad-card-head .ad-status { flex: 0 0 auto; }
+.ad-card-head .status-badge { flex: 0 0 auto; }
 .ad-card-facts {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
-  margin: 0; padding: 10px; border-radius: 8px; background: #f8fafc;
+  margin: 0; padding: 10px; border-radius: var(--radius-control); background: var(--canvas);
 }
-.ad-card-facts dt { color: var(--muted); font-size: 9px; }
+.ad-card-facts dt { color: var(--muted); font-size: 10px; }
 .ad-card-facts dd { margin: 2px 0 0; color: var(--ink); font-size: 12px; font-weight: 650; }
-.ad-card-leave { margin: 0; color: var(--muted); font-size: 10.5px; }
+.ad-card-leave { margin: 0; color: var(--muted); font-size: 11px; }
 .ad-card > .button { justify-content: center; }
 
 .ad-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ad-year-inline select { min-width: 130px; }
 
-.ad-alert { margin: 0; padding: 11px 14px; border-radius: 10px; font-size: 13px; }
-.ad-alert-danger { background: #fde9e9; color: #a11d1d; }
-.ad-alert-success { background: #e4f7ec; color: #0b6b45; }
+.ad-alert { margin: 0; padding: 12px 14px; border: 1px solid transparent; border-radius: var(--radius-control); font-size: 13px; }
+.ad-alert-danger { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger-text); }
+.ad-alert-success { border-color: var(--success-border); background: var(--success-bg); color: var(--success-text); }
 
 .ad-person-card {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  padding: 18px 20px; border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card);
 }
 .ad-person-identity { flex: 1 1 auto; min-width: 0; }
-.ad-person-identity h2 { margin: 0 0 3px; color: var(--ink); font-size: 17px; font-weight: 700; }
+.ad-person-identity h2 { margin: 0 0 3px; color: var(--ink); font-size: 20px; font-weight: 700; }
 .ad-person-identity p { margin: 0; color: var(--muted); font-size: 11px; }
 .ad-person-identity p + p { margin-top: 2px; }
 .ad-person-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -1058,32 +976,32 @@ defineExpose({ exportCsv })
 }
 .ad-detail-main, .ad-detail-side { display: grid; gap: 16px; min-width: 0; }
 .ad-panel {
-  min-width: 0; padding: 18px 20px;
-  border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  min-width: 0; padding: 20px;
+  border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card);
 }
 .ad-panel-heading { margin-bottom: 14px; }
-.ad-panel-heading h3 { margin: 0 0 3px; color: var(--ink); font-size: 14px; font-weight: 650; }
+.ad-panel-heading h3 { margin: 0 0 3px; color: var(--ink); font-size: 16px; font-weight: 650; }
 .ad-panel-heading p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .ad-hero {
   display: flex; align-items: center; gap: 24px; padding: 16px;
-  border: 1px solid var(--border); border-radius: 10px; background: #f8fafc;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--canvas);
 }
 .ad-hero-available {
   flex: 0 0 112px; display: grid; justify-items: center;
   padding-right: 20px; border-right: 1px solid var(--border);
 }
-.ad-hero-available span { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-.ad-hero-available strong { color: var(--ink); font-size: 36px; line-height: 1.1; }
+.ad-hero-available span { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.ad-hero-available strong { color: var(--ink); font-size: 34px; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .ad-hero-available small { color: var(--muted); font-size: 10px; }
 .ad-composition { flex: 1 1 auto; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
-.ad-composition span { display: block; color: var(--muted); font-size: 9.5px; }
+.ad-composition span { display: block; color: var(--muted); font-size: 10px; }
 .ad-composition strong { display: block; margin-top: 2px; color: var(--ink); font-size: 14px; font-weight: 650; }
 .ad-formula { margin: 10px 0 0; color: var(--muted); font-size: 10.5px; }
 
 .ad-empty-state {
   display: flex; align-items: flex-start; gap: 12px; padding: 14px;
-  border: 1px solid #f0dca8; border-radius: 10px; background: #fffdf5;
+  border: 1px solid var(--warning-border); border-radius: var(--radius-control); background: var(--warning-bg);
 }
 .ad-empty-state strong { display: block; color: var(--ink); font-size: 12px; }
 .ad-empty-state p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
@@ -1092,19 +1010,19 @@ defineExpose({ exportCsv })
 .ad-ledger { width: 100%; border-collapse: collapse; min-width: 620px; }
 .ad-ledger th {
   padding: 0 10px 9px; border-bottom: 1px solid var(--border);
-  color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--muted); font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
   text-align: left; text-transform: uppercase;
 }
 .ad-ledger td {
   padding: 10px; border-bottom: 1px solid var(--divider);
-  color: var(--text); font-size: 10.5px; vertical-align: top;
+  color: var(--text); font-size: 12px; vertical-align: top;
 }
 .ad-ledger tr:last-child td { border-bottom: 0; }
 .ad-ledger th.ad-number, .ad-ledger td.ad-number { text-align: right; }
 .ad-nowrap { white-space: nowrap; }
-.ad-ledger strong { display: block; color: var(--ink); font-size: 10.5px; font-weight: 600; }
-.ad-ledger small { display: block; margin-top: 2px; color: var(--muted); font-size: 9.5px; line-height: 1.45; }
-.ad-delta { display: inline-flex; min-width: 36px; justify-content: flex-end; padding: 2px 6px; border-radius: 6px; font-weight: 650; }
+.ad-ledger strong { display: block; color: var(--ink); font-size: 12px; font-weight: 600; }
+.ad-ledger small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.ad-delta { display: inline-flex; min-width: 36px; justify-content: flex-end; padding: 2px 6px; border-radius: var(--radius-control); font-weight: 650; }
 .ad-reason { display: block; max-width: 260px; line-height: 1.45; }
 
 .ad-leave-summary { display: grid; gap: 6px; justify-items: start; }
@@ -1117,32 +1035,29 @@ defineExpose({ exportCsv })
 .ad-field { display: grid; gap: 5px; }
 .ad-field label { color: var(--ink); font-size: 11px; font-weight: 600; }
 .ad-field input, .ad-field textarea {
-  width: 100%; min-height: 38px; padding: 8px 10px;
-  border: 1px solid #8494a1; border-radius: 8px; background: #fff;
+  width: 100%; min-height: 44px; padding: 10px 12px;
+  border: 1px solid var(--control-border); border-radius: var(--radius-control); background: var(--card);
   color: var(--text); font-size: 12px;
 }
 .ad-field textarea { resize: vertical; line-height: 1.5; }
-.ad-field input:focus-visible, .ad-field textarea:focus-visible {
-  outline: 0; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12);
-}
 .ad-field-hint { color: var(--muted); font-size: 10px; line-height: 1.4; }
 .ad-optional { color: var(--muted); font-weight: 400; }
 
 .ad-preview {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
-  padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc;
+  padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--canvas);
 }
-.ad-preview span { display: block; color: var(--muted); font-size: 9.5px; }
+.ad-preview span { display: block; color: var(--muted); font-size: 10px; }
 .ad-preview strong { display: block; margin-top: 2px; color: var(--ink); font-size: 13px; font-weight: 650; }
-.ad-preview-danger { border-color: #eebcbc; background: #fff7f7; }
-.ad-preview-danger strong { color: #a11d1d; }
+.ad-preview-danger { border-color: var(--danger-border); background: var(--danger-bg); }
+.ad-preview-danger strong { color: var(--danger-text); }
 
 .ad-form-hint {
   display: flex; align-items: flex-start; gap: 6px; margin: 0;
   color: var(--muted); font-size: 10.5px; line-height: 1.45;
 }
 .ad-form-hint svg { flex: 0 0 auto; margin-top: 1px; }
-.ad-form-hint-danger { color: #a11d1d; }
+.ad-form-hint-danger { color: var(--danger-text); }
 .ad-submit { width: 100%; justify-content: center; }
 
 /* Riwayat pengajuan cuti */
@@ -1152,7 +1067,7 @@ defineExpose({ exportCsv })
 }
 .ad-spinner {
   width: 18px; height: 18px; border: 2px solid var(--border);
-  border-top-color: var(--blue); border-radius: 50%;
+  border-top-color: var(--primary); border-radius: 50%;
   animation: ad-spin 0.8s linear infinite;
 }
 @keyframes ad-spin { to { transform: rotate(360deg); } }
@@ -1162,45 +1077,27 @@ defineExpose({ exportCsv })
   display: grid; grid-template-columns: 1fr auto;
   align-items: center; gap: 12px;
   padding: 12px 14px;
-  border: 1px solid var(--border); border-radius: 10px; background: #fff;
-  cursor: pointer; transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card);
+  cursor: pointer; transition: border-color 120ms ease-out, background 120ms ease-out;
 }
-.ad-history-item:hover { border-color: var(--blue); background: #f4f8ff; }
+.ad-history-item:hover { border-color: var(--primary); background: var(--primary-tint); }
 .ad-history-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ad-history-header strong { color: var(--ink); font-size: 12px; font-weight: 650; }
-.ad-history-status {
-  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
-  border: 1px solid transparent; border-radius: 10px; font-size: 8.5px; font-weight: 600;
-  white-space: nowrap;
-}
-.ad-status-draft { background: #edf2f6; border-color: #d8e2ea; color: var(--muted); }
-.ad-status-submitted { background: #e9f1ff; border-color: #c9dafb; color: #1b4fbf; }
-.ad-status-admin_review { background: #e9f1ff; border-color: #c9dafb; color: #1b4fbf; }
-.ad-status-admin_verified { background: #e9f1ff; border-color: #c9dafb; color: #1b4fbf; }
-.ad-status-pertimbangan_review { background: #fff6de; border-color: #f2d79a; color: #8a5a00; }
-.ad-status-kasubag_review { background: #fff6de; border-color: #f2d79a; color: #8a5a00; }
-.ad-status-kepsta_review { background: #fff6de; border-color: #f2d79a; color: #8a5a00; }
-.ad-status-ppk_review { background: #fff6de; border-color: #f2d79a; color: #8a5a00; }
-.ad-status-returned_for_revision { background: #fde9e9; border-color: #f5c6cb; color: #a11d1d; }
-.ad-status-approved { background: #e4f7ec; border-color: #b8e6c9; color: #0b6b45; }
-.ad-status-rejected { background: #fde9e9; border-color: #f5c6cb; color: #a11d1d; }
-.ad-status-withdrawn { background: #edf2f6; border-color: #d8e2ea; color: var(--muted); }
-.ad-status-cancelled { background: #edf2f6; border-color: #d8e2ea; color: var(--muted); }
 .ad-history-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
 .ad-history-meta span { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10.5px; }
 .ad-history-meta svg { color: var(--muted); flex-shrink: 0; }
 .ad-history-actions { display: flex; align-items: center; }
 .ad-history-go { color: var(--muted); }
 
-@media (max-width: 1180px) {
+@media (max-width: 1200px) {
   .ad-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ad-table { min-width: 1080px; }
   .ad-table-panel { overflow-x: auto; }
   .ad-detail-grid { grid-template-columns: minmax(0, 1fr); }
   .ad-form-panel { position: static; }
 }
-@media (max-width: 720px) {
-  .ad-metrics { grid-template-columns: 1fr; }
+@media (max-width: 700px) {
+  .ad-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ad-search { flex: 1 1 240px; width: auto; }
   .ad-select, .ad-select select { flex: 1 1 100%; width: 100%; }
   .ad-table { display: none; }

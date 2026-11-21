@@ -1,12 +1,13 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ChevronLeft, ChevronRight, Lock, Search } from 'lucide-vue-next'
+import { Lock, Search } from 'lucide-vue-next'
+import TablePager from './TablePager.vue'
 
 const emptyFilters = { actorUserId: '', action: '', role: '', entityType: '', from: '', to: '', q: '' }
 const applied = reactive({ ...emptyFilters })
 const draft = reactive({ ...emptyFilters })
 const page = ref(0)
-const pageSize = 8
+const pageSize = 20
 const loading = ref(false)
 const error = ref('')
 const data = ref(null)
@@ -14,9 +15,6 @@ const data = ref(null)
 const items = computed(() => data.value?.items || [])
 const total = computed(() => Number(data.value?.summary?.total || 0))
 const facets = computed(() => data.value?.filters || { actions: [], entityTypes: [], actors: [], roles: [] })
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
-const firstShown = computed(() => total.value ? page.value * pageSize + 1 : 0)
-const lastShown = computed(() => Math.min((page.value + 1) * pageSize, total.value))
 
 const queryString = computed(() => {
   const params = new URLSearchParams()
@@ -114,28 +112,12 @@ function resetFilters() {
   load()
 }
 
-function changePage(delta) {
-  page.value = Math.min(Math.max(page.value + delta, 0), totalPages.value - 1)
+function goToPage(target) {
+  page.value = target
   load()
 }
 
-function exportCsv() {
-  const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(applied)) {
-    if (value) params.set(key, value)
-  }
-  const suffix = params.toString()
-  const link = document.createElement('a')
-  link.href = `/api/admin/audit/export.csv${suffix ? `?${suffix}` : ''}`
-  link.download = 'audit-log.csv'
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-}
-
 onMounted(load)
-
-defineExpose({ exportCsv })
 </script>
 
 <template>
@@ -173,7 +155,7 @@ defineExpose({ exportCsv })
       <button class="button button-quiet" type="button" @click="resetFilters">Reset</button>
     </form>
 
-    <section class="au-panel" aria-label="Riwayat tindakan">
+    <section class="au-panel panel-flex" aria-label="Riwayat tindakan">
       <div class="au-panel-heading">
         <h2>Riwayat tindakan</h2>
         <span class="au-immutable"><Lock :size="11" aria-hidden="true" /> Immutable</span>
@@ -201,53 +183,31 @@ defineExpose({ exportCsv })
         {{ total ? 'Tidak ada entri pada halaman ini.' : 'Tidak ada entri audit yang cocok dengan filter ini.' }}
       </p>
       <p v-if="loading" class="au-loading" role="status">Memuat audit log…</p>
-      <footer class="au-pagination">
-        <span>Menampilkan {{ firstShown }}-{{ lastShown }} dari {{ total }} entri audit</span>
-        <div>
-          <button class="au-page-button" type="button" aria-label="Halaman sebelumnya" :disabled="page === 0" @click="changePage(-1)">
-            <ChevronLeft :size="14" aria-hidden="true" />
-          </button>
-          <button
-            v-for="n in totalPages"
-            :key="n"
-            class="au-page-button"
-            :class="{ active: page === n - 1 }"
-            type="button"
-            :aria-label="`Halaman ${n}`"
-            @click="page = n - 1; load()"
-          >{{ n }}</button>
-          <button class="au-page-button" type="button" aria-label="Halaman berikutnya" :disabled="page >= totalPages - 1" @click="changePage(1)">
-            <ChevronRight :size="14" aria-hidden="true" />
-          </button>
-        </div>
-      </footer>
+      <TablePager :page="page" :total="total" :page-size="pageSize" label="entri audit" @change="goToPage" />
     </section>
   </section>
 </template>
 
 <style scoped>
 .audit-page {
-  --ink: #142f3a; --text: #3d525c; --muted: #5a6f78;
-  --border: #e1e9f1; --divider: #edf2f7;
   display: grid; gap: 20px; min-width: 0;
 }
-.au-error { margin: 0; padding: 12px 16px; border-radius: 10px; background: #fde9e9; color: #a11d1d; font-size: 13px; }
+.au-error { margin: 0; padding: 12px 14px; border: 1px solid var(--danger-border); border-radius: var(--radius-control); background: var(--danger-bg); color: var(--danger-text); font-size: 13px; }
 .au-loading { margin: 0; padding: 12px 20px; color: var(--muted); font-size: 12px; }
 
 .au-filters {
   display: flex; align-items: center; gap: 12px;
-  padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--subtle);
 }
 .au-filters > label { position: relative; min-width: 0; }
 .au-search {
   display: flex; align-items: center; gap: 8px; width: 300px; height: 40px; padding: 0 12px;
-  border: 1px solid #8494a1; border-radius: 8px; color: #6e8590; background: #fff;
+  border: 1px solid var(--control-border); border-radius: var(--radius-control); color: var(--muted); background: var(--card);
 }
-.au-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; }
-.au-search:focus-within { border-color: #0d6efd; box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12); }
+.au-search input { width: 100%; border: 0; background: transparent; color: var(--text); font-size: 13px; }
 .au-select select, .au-date input {
   width: 180px; height: 40px; padding: 0 10px;
-  border: 1px solid #8494a1; border-radius: 8px; background: #fff;
+  border: 1px solid var(--control-border); border-radius: var(--radius-control); background: var(--card);
   color: var(--text); font-size: 12px; cursor: pointer;
 }
 .au-date input { width: 170px; }
@@ -255,20 +215,20 @@ defineExpose({ exportCsv })
 
 .au-panel {
   min-width: 0; padding: 20px;
-  border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card);
 }
 .au-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.au-panel-heading h2 { margin: 0; color: var(--ink); font-size: 15px; font-weight: 600; }
-.au-immutable { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9.5px; font-weight: 600; }
+.au-panel-heading h2 { margin: 0; color: var(--ink); font-size: 16px; font-weight: 600; }
+.au-immutable { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 600; }
 
 .au-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .au-table th {
   padding: 0 10px 12px; border-bottom: 1px solid var(--border);
-  color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: 0.03em; text-align: left; text-transform: uppercase;
+  color: var(--muted); font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-align: left; text-transform: uppercase;
 }
 .au-table td {
-  padding: 14px 10px; border-bottom: 1px solid var(--divider);
-  color: var(--text); font-size: 10px; vertical-align: middle;
+  padding: 12px 10px; border-bottom: 1px solid var(--divider);
+  color: var(--text); font-size: 12px; vertical-align: middle;
 }
 .au-table th:first-child, .au-table td:first-child { padding-left: 0; }
 .au-table th:last-child, .au-table td:last-child { padding-right: 0; }
@@ -282,28 +242,15 @@ defineExpose({ exportCsv })
 .au-time { color: var(--muted); white-space: nowrap; }
 .au-actor { color: var(--ink); font-weight: 600; }
 .au-role {
-  display: inline-flex; align-items: center; height: 22px; padding: 0 10px;
-  border: 1px solid #d8e2ea; border-radius: 11px; background: #edf2f6;
-  color: var(--text); font-size: 9px; font-weight: 600;
+  display: inline-flex; align-items: center; min-height: 22px; padding: 3px 8px;
+  border: 1px solid var(--neutral-border); border-radius: 999px; background: var(--neutral-bg);
+  color: var(--neutral-text); font-size: 10px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase;
 }
-.au-entity { color: #0d6efd; font-weight: 600; overflow-wrap: anywhere; }
-.au-change { color: #0d6efd; font-size: 9px; overflow-wrap: anywhere; }
-.au-empty { margin: 0; padding: 36px 0; text-align: center; color: var(--muted); font-size: 13px; }
+.au-entity { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
+.au-change { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.au-empty { margin: 0; padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px; }
 
-.au-pagination {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding-top: 14px; color: var(--muted); font-size: 11px;
-}
-.au-pagination > div { display: flex; gap: 4px; }
-.au-page-button {
-  min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: 8px;
-  background: transparent; color: var(--muted); font-size: 11px; cursor: pointer;
-}
-.au-page-button.active { background: #e9f1ff; color: #0b5ed7; font-weight: 600; }
-.au-page-button:hover:not(:disabled):not(.active) { background: var(--divider); }
-.au-page-button:disabled { opacity: 0.45; cursor: not-allowed; }
-
-@media (max-width: 1400px) {
+@media (max-width: 1200px) {
   .au-filters { flex-wrap: wrap; }
   .au-search { flex: 1 1 260px; width: auto; }
   .au-table { min-width: 1000px; }
@@ -311,6 +258,5 @@ defineExpose({ exportCsv })
 }
 @media (max-width: 640px) {
   .au-select select, .au-date input { width: 100%; flex: 1 1 100%; }
-  .au-pagination { flex-direction: column; align-items: flex-start; }
 }
 </style>

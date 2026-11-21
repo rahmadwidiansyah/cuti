@@ -1,27 +1,29 @@
 <script setup>
 import { computed } from 'vue'
-import { ChevronLeft, ChevronRight, Download, Paperclip, Search, X } from 'lucide-vue-next'
+import { Paperclip, Search, X } from 'lucide-vue-next'
+import StatusPill from './StatusPill.vue'
+import TablePager from './TablePager.vue'
+import { statusLabel } from '../status.js'
+import { formatDateRange } from '../dates.js'
 
 const props = defineProps({
   items: { type: Array, default: () => [] },
   total: { type: Number, default: 0 },
   page: { type: Number, default: 0 },
+  pageSize: { type: Number, default: 20 },
   years: { type: Array, default: () => [] },
   leaveTypes: { type: Array, default: () => [] },
   filters: { type: Object, required: true },
   statusCounts: { type: Object, default: () => ({}) },
   loading: { type: Boolean, default: false },
 })
-const emit = defineEmits(['apply', 'reset', 'page', 'open', 'export'])
-
-const pageSize = 8
-const totalPages = computed(() => Math.max(1, Math.ceil(Number(props.total) / pageSize)))
+const emit = defineEmits(['apply', 'reset', 'page', 'open'])
 const tabs = computed(() => [
   { key: '', label: 'Semua', count: props.statusCounts.total || 0 },
   { key: 'DRAFT', label: 'Draf', count: props.statusCounts.draft || 0 },
   { key: 'PENDING', label: 'Menunggu', count: props.statusCounts.pending || 0 },
   { key: 'APPROVED', label: 'Disetujui', count: props.statusCounts.approved || 0 },
-  { key: 'REJECTED', label: 'Tidak disetujui', count: props.statusCounts.rejected || 0 },
+  { key: 'REJECTED', label: 'Tidak Disetujui', count: props.statusCounts.rejected || 0 },
   { key: 'RETURNED_FOR_REVISION', label: 'Dikembalikan', count: props.statusCounts.returned || 0 },
   { key: 'CANCELLED', label: 'Dibatalkan', count: props.statusCounts.cancelled || 0 },
 ])
@@ -32,28 +34,9 @@ function formatDate(value) {
   if (Number.isNaN(date.valueOf())) return '-'
   return new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(date)
 }
-function statusLabel(status) {
-  return ({
-    DRAFT: 'Draf', SUBMITTED: 'Menunggu verifikasi', ADMIN_REVIEW: 'Menunggu verifikasi',
-    ADMIN_VERIFIED: 'Diteruskan', PERTIMBANGAN_REVIEW: 'Pertimbangan SDM',
-    KASUBAG_REVIEW: 'Antrean Kasubag', KEPSTA_REVIEW: 'Menunggu Kepsta', PPK_REVIEW: 'Menunggu PPK',
-    RETURNED_FOR_REVISION: 'Dikembalikan', APPROVED: 'Disetujui', REJECTED: 'Tidak disetujui',
-    WITHDRAWN: 'Dibatalkan pegawai', CANCELLED: 'Dibatalkan Admin',
-  })[status] || status || '-'
-}
-function statusTone(status) {
-  if (status === 'APPROVED') return 'green'
-  if (['REJECTED', 'CANCELLED', 'WITHDRAWN'].includes(status)) return 'red'
-  if (['RETURNED_FOR_REVISION'].includes(status)) return 'amber'
-  if (['SUBMITTED', 'ADMIN_REVIEW', 'PERTIMBANGAN_REVIEW', 'KASUBAG_REVIEW', 'KEPSTA_REVIEW', 'PPK_REVIEW'].includes(status)) return 'amber'
-  return 'neutral'
-}
 function selectTab(key) {
   props.filters.status = key
   emit('apply')
-}
-function changePage(delta) {
-  emit('page', Math.min(Math.max(props.page + delta, 0), totalPages.value - 1))
 }
 </script>
 
@@ -103,12 +86,9 @@ function changePage(delta) {
       <button class="button button-quiet" type="button" @click="emit('reset')">
         <X :size="14" aria-hidden="true" /> Reset
       </button>
-      <button class="button button-secondary hist-export" type="button" @click="emit('export')">
-        <Download :size="14" aria-hidden="true" /> Ekspor CSV
-      </button>
     </form>
 
-    <section class="hist-table-panel">
+    <section class="hist-table-panel panel-flex">
       <table class="hist-table">
         <thead>
           <tr>
@@ -120,64 +100,76 @@ function changePage(delta) {
           <tr v-for="item in items" :key="item.id">
             <td>
               <button class="hist-link" type="button" @click="emit('open', item.id)">{{ item.request_number }}</button>
-              <small>Diajukan {{ formatDate(item.submitted_at || item.created_at) }}</small>
             </td>
             <td>{{ item.leave_type_name }}</td>
-            <td>{{ formatDate(item.start_date) }} s.d. {{ formatDate(item.end_date) }}</td>
+            <td>{{ formatDateRange(item.start_date, item.end_date) }}</td>
             <td>{{ item.requested_working_days }} hari</td>
             <td>{{ formatDate(item.submitted_at || item.created_at) }}</td>
-            <td><span class="hist-badge" :class="`hist-badge-${statusTone(item.status)}`">{{ statusLabel(item.status) }}</span></td>
+            <td><StatusPill :status="item.status" /></td>
             <td>{{ statusLabel(item.status) }}</td>
             <td><Paperclip :size="14" aria-hidden="true" /></td>
-            <td><button class="hist-icon" type="button" :aria-label="`Buka ${item.request_number}`" @click="emit('open', item.id)">›</button></td>
+            <td><button class="hist-icon" type="button" :aria-label="`Buka ${item.request_number}`" @click="emit('open', item.id)"><ChevronRight :size="14" aria-hidden="true" /></button></td>
           </tr>
         </tbody>
       </table>
+      <div v-if="items.length" class="hist-cards">
+        <article v-for="item in items" :key="`card-${item.id}`" class="hist-card">
+          <div class="hist-card-head">
+            <button class="hist-link" type="button" @click="emit('open', item.id)">{{ item.request_number }}</button>
+            <StatusPill :status="item.status" />
+          </div>
+          <p class="hist-card-title">{{ item.leave_type_name }}</p>
+          <dl class="hist-card-facts">
+            <div><dt>Tanggal cuti</dt><dd>{{ formatDateRange(item.start_date, item.end_date) }}</dd></div>
+            <div><dt>Durasi</dt><dd>{{ item.requested_working_days }} hari</dd></div>
+            <div><dt>Diajukan</dt><dd>{{ formatDate(item.submitted_at || item.created_at) }}</dd></div>
+          </dl>
+          <button class="button button-secondary button-small" type="button" @click="emit('open', item.id)">Buka pengajuan</button>
+        </article>
+      </div>
       <p v-if="!items.length && !loading" class="hist-empty">Tidak ada pengajuan yang cocok dengan filter ini. Ubah filter atau tekan Reset.</p>
-      <footer class="hist-pagination">
-        <span>Menampilkan {{ total ? page * pageSize + 1 : 0 }}-{{ Math.min((page + 1) * pageSize, total) }} dari {{ total }} pengajuan</span>
-        <div>
-          <button class="hist-page" type="button" aria-label="Halaman sebelumnya" :disabled="page === 0" @click="changePage(-1)"><ChevronLeft :size="14" aria-hidden="true" /></button>
-          <button v-for="n in totalPages" :key="n" class="hist-page" :class="{ active: page === n - 1 }" type="button" @click="emit('page', n - 1)">{{ n }}</button>
-          <button class="hist-page" type="button" aria-label="Halaman berikutnya" :disabled="page >= totalPages - 1" @click="changePage(1)"><ChevronRight :size="14" aria-hidden="true" /></button>
-        </div>
-      </footer>
+      <TablePager :page="page" :total="total" :page-size="pageSize" label="pengajuan" @change="p => emit('page', p)" />
     </section>
   </section>
 </template>
 
 <style scoped>
-.hist { --ink:#142f3a; --text:#3d525c; --muted:#5a6f78; --border:#e1e9f1; display:grid; gap:20px; min-width:0; }
+.hist { display:grid; gap:20px; min-width:0; }
 .hist-tabs { display:flex; gap:24px; border-bottom:1px solid var(--border); overflow-x:auto; }
-.hist-tab { height:40px; padding:0 0 10px; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--muted); font-size:13px; white-space:nowrap; cursor:pointer; }
+.hist-tab { height:40px; padding:0 0 10px; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--muted); font-size:13px; font-weight:600; white-space:nowrap; cursor:pointer; }
 .hist-tab span { margin-left:4px; font-size:11px; font-weight:600; }
-.hist-tab.active { border-bottom-color:#0d6efd; color:#0d6efd; font-weight:600; }
-.hist-filters { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px; border:1px solid var(--border); border-radius:12px; background:#fff; }
-.hist-search { display:flex; align-items:center; gap:8px; width:300px; height:40px; padding:0 12px; border:1px solid #8494a1; border-radius:8px; color:#6e8590; }
-.hist-search input { width:100%; border:0; outline:0; background:transparent; color:var(--text); font-size:13px; }
-.hist-select select { width:180px; height:40px; padding:0 10px; border:1px solid #8494a1; border-radius:8px; background:#fff; color:var(--text); font-size:12px; cursor:pointer; }
+.hist-tab.active { border-bottom-color:var(--primary); color:var(--primary); font-weight:600; }
+.hist-filters { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 16px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--subtle); }
+.hist-search { display:flex; align-items:center; gap:8px; width:300px; height:40px; padding:0 12px; border:1px solid var(--control-border); border-radius:var(--radius-control); color:var(--muted); background:var(--card); }
+.hist-search input { width:100%; border:0; background:transparent; color:var(--text); font-size:13px; }
+.hist-select select { width:180px; height:40px; padding:0 10px; border:1px solid var(--control-border); border-radius:var(--radius-control); background:var(--card); color:var(--text); font-size:12px; cursor:pointer; }
 .hist-filters .button { min-height:40px; }
-.hist-export { margin-left:auto; }
-.hist-table-panel { min-width:0; border:1px solid var(--border); border-radius:12px; background:#fff; overflow-x:auto; }
+
+.hist-table-panel { min-width:0; min-height:260px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--card); overflow-x:auto; }
 .hist-table { width:100%; border-collapse:collapse; min-width:1080px; }
-.hist-table th { padding:16px 20px 12px; border-bottom:1px solid var(--border); color:var(--muted); font-size:9px; font-weight:600; letter-spacing:.04em; text-align:left; text-transform:uppercase; }
-.hist-table td { padding:12px 20px; border-bottom:1px solid #edf2f7; color:var(--text); font-size:10.5px; }
-.hist-link { padding:0; border:0; background:transparent; color:#0d6efd; font-size:10.5px; font-weight:600; cursor:pointer; }
+.hist-table th { padding:16px 20px 12px; border-bottom:1px solid var(--border); color:var(--muted); font-size:9.5px; font-weight:700; letter-spacing:.06em; text-align:left; text-transform:uppercase; }
+.hist-table td { padding:12px 20px; border-bottom:1px solid var(--divider); color:var(--text); font-size:12px; }
+.hist-link { padding:0; border:0; background:transparent; color:var(--primary); font-size:12px; font-weight:650; cursor:pointer; }
 .hist-link:hover { text-decoration:underline; }
-.hist-table td small { display:block; margin-top:2px; color:var(--muted); font-size:9px; }
-.hist-badge { display:inline-flex; align-items:center; height:20px; padding:0 8px; border-radius:10px; font-size:9px; font-weight:600; white-space:nowrap; }
-.hist-badge-green { background:#e4f7ec; color:#0b6b45; }
-.hist-badge-red { background:#fde9e9; color:#a11d1d; }
-.hist-badge-amber { background:#fff6de; color:#8a5a00; }
-.hist-badge-neutral { background:#edf2f6; color:var(--text); }
-.hist-icon { width:28px; height:28px; border:0; border-radius:8px; background:transparent; color:var(--muted); font-size:18px; cursor:pointer; }
-.hist-icon:hover { background:#f7f9fc; }
+.hist-cards { display: none; }
+.hist-card { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card); }
+.hist-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hist-card-title { margin: 0; color: var(--ink); font-size: 12.5px; font-weight: 600; }
+.hist-card-facts { display: grid; gap: 6px; margin: 0; }
+.hist-card-facts > div { display: flex; justify-content: space-between; gap: 12px; }
+.hist-card-facts dt { color: var(--muted); font-size: 11px; }
+.hist-card-facts dd { margin: 0; color: var(--text); font-size: 11px; text-align: right; }
+.hist-card > .button { justify-content: center; }
+.hist-icon { width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:var(--radius-control); background:transparent; color:var(--muted); cursor:pointer; }
+.hist-icon:hover { background:var(--subtle); }
 .hist-empty { margin:0; padding:40px 20px; text-align:center; color:var(--muted); font-size:13px; }
-.hist-pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 20px; color:var(--muted); font-size:11px; }
-.hist-pagination > div { display:flex; gap:4px; }
-.hist-page { min-width:28px; height:28px; padding:0 6px; border:0; border-radius:8px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
-.hist-page.active { background:#e9f1ff; color:#0b5ed7; font-weight:600; }
-.hist-page:hover:not(:disabled):not(.active) { background:#f7f9fc; }
-.hist-page:disabled { opacity:.45; cursor:not-allowed; }
-@media (max-width:640px){ .hist-filters > label { flex:1 1 100%; } .hist-search,.hist-select select { width:100%; } .hist-pagination{ flex-direction:column; align-items:flex-start; } }
+
+@media (max-width:700px){
+  .hist-filters > label { flex:1 1 100%; }
+  .hist-search,.hist-select select { width:100%; }
+  .hist-pagination{ flex-direction:column; align-items:flex-start; }
+  .hist-table-panel { border:0; background:transparent; overflow:visible; }
+  .hist-table { display:none; }
+  .hist-cards { display:grid; gap:10px; }
+}
 </style>

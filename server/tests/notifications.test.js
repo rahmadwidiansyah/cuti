@@ -157,3 +157,20 @@ test('notifyRequestLifecycle does not include sensitive medical/attachment info 
   assert.ok(!bodyText.includes('surat_dokter'), 'Must not contain attachment names')
   assert.ok(!bodyText.includes('diagnosis'), 'Must not contain medical diagnosis details')
 })
+
+test('notifyRequestLifecycle RESUBMITTED notifies Admin with resubmission-scoped dedupe key', async () => {
+  const client = createMockClient({ users: [{ id: 2, full_name: 'Admin TU' }] })
+  await notifyRequestLifecycle(client, {
+    eventType: 'RESUBMITTED',
+    request: { id: 77, request_number: 'REQ-077', employee_name: 'Budi Santoso', employee_user_id: 20 },
+    actor: { id: 20, fullName: 'Budi Santoso' },
+  })
+
+  const inserts = client.queries.filter((q) => q.sql.toUpperCase().startsWith('INSERT INTO CUTI.NOTIFICATIONS'))
+  assert.equal(inserts.length, 1, 'Exactly one notification for the single Admin')
+  const insert = inserts[0]
+  assert.ok(insert.params.includes('LEAVE_RESUBMITTED'), 'Notification type must be LEAVE_RESUBMITTED')
+
+  const dedupeKey = insert.params.find((p) => typeof p === 'string' && p.startsWith('RESUBMIT:77:'))
+  assert.ok(dedupeKey, 'Dedupe key must be scoped to the resubmission (not shared with first submit)')
+})

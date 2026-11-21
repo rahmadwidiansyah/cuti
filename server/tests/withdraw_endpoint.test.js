@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { withdrawLeaveRequest } from '../cancellation.js'
 
-function createMockClient({ request, balance, stages = [] }) {
+function createMockClient({ request, balance, stages = [], latestLedgerType = 'RESERVATION' }) {
   const queries = []
   return {
     queries,
@@ -15,6 +15,10 @@ function createMockClient({ request, balance, stages = [] }) {
       }
       if (s.includes('FROM CUTI.LEAVE_REQUEST_STAGES') && s.includes('WHERE LEAVE_REQUEST_ID = $1')) {
         return { rowCount: stages.length, rows: stages }
+      }
+      // Transaksi ledger terakhir untuk request (gate anti double-release K2).
+      if (s.includes('FROM CUTI.LEAVE_BALANCE_TRANSACTIONS')) {
+        return { rowCount: 1, rows: latestLedgerType ? [{ transaction_type: latestLedgerType }] : [] }
       }
       if (s.includes('FROM CUTI.LEAVE_BALANCES') && s.includes('FOR UPDATE')) {
         return { rowCount: balance ? 1 : 0, rows: balance ? [balance] : [] }
@@ -132,4 +136,41 @@ test('withdrawLeaveRequest succeeds pre-verification, releases reservation, and 
     q.sql.includes('INSERT INTO cuti.leave_request_events') && q.sql.includes('WITHDRAWN'),
   )
   assert.ok(eventQuery, 'Should create WITHDRAWN event')
+})
+
+test('withdrawLeaveRequest on RETURNED_FOR_REVISION withdraws without double release (audit K2)', async () => {
+  const mockReq = {
+    id: 51,
+    request_number: 'REQ/2026/051',
+    status: 'RETURNED_FOR_REVISION',
+    employee_user_id: 10,
+    employee_id: 5,
+    leave_type_id: 1,
+    is_annual_leave: true,
+    deducts_annual_balance: true,
+    balance_period_year: 2026,
+    requested_working_days: 4,
+  }
+  const mockBalance = { id: 210, reserved_days: 0, available_days: 12 }
+  // RETURN sudah melepas reservasi: transaksi ledger terakhir = RELEASE.
+  const client = createMockClient({ request: mockReq, balance: mockBalance, latestLedgerType: 'RELEASE' })
+  const user = { id: 10, fullName: 'Pegawai Satu', roles: [{ code: 'EMPLOYEE' }] }
+
+  const result = await withdrawLeaveRequest(
+    client,
+    user,
+    51,
+    'Menarik pengajuan yang dikembalikan karena tidak jadi memperbaiki.',
+  )
+
+  assert.equal(result.success, true)
+  assert.equal(result.status, 'WITHDRAWN')
+
+  const releaseTx = client.queries.find((q) =>
+    q.sql.includes('INSERT INTO cuti.leave_balance_transactions') && q.sql.includes("'RELEASE'"),
+  )
+  assert.equal(releaseTx, undefined, 'Returned request must not release its reservation again')
+
+  const cancelRow = client.queries.find((q) => q.sql.includes('INSERT INTO cuti.leave_cancellations'))
+  assert.ok(cancelRow, 'Withdrawal must still be recorded in leave_cancellations')
 })

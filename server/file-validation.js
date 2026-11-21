@@ -96,9 +96,13 @@ export function sanitizeFilename(original) {
 
 /**
  * Validasi satu buffer upload. Melempar UploadValidationError bila tidak valid.
+ * @param {object} [options]
+ * @param {boolean} [options.allowMissingExtension=false] - Untuk unggahan raw
+ *   tanpa nama ber-ekstensi (mis. tanda tangan canvas): ekstensi diambil dari
+ *   MIME yang terdeteksi magic bytes, bukan dari nama file.
  * @returns {Promise<{mime, extension, size, sha256, width, height, filename, storageKey}>}
  */
-export async function validateUpload(buffer, category, originalFilename = '') {
+export async function validateUpload(buffer, category, originalFilename = '', { allowMissingExtension = false } = {}) {
   const cfg = LIMITS[category]
   if (!cfg) throw new Error(`Kategori upload tidak dikenali: ${category}`)
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
@@ -118,12 +122,16 @@ export async function validateUpload(buffer, category, originalFilename = '') {
 
   // Tolak double-extension: ekstensi terakhir HARUS sesuai MIME yang terdeteksi.
   // Nama sah dengan banyak titik (mis. "ktp.2024.pdf") tetap diterima.
-  const sanitized = sanitizeFilename(originalFilename)
+  let sanitized = sanitizeFilename(originalFilename)
   const lastDot = sanitized.lastIndexOf('.')
   if (lastDot === -1) {
-    throw new UploadValidationError('Nama file harus memiliki ekstensi.')
+    if (!allowMissingExtension) {
+      throw new UploadValidationError('Nama file harus memiliki ekstensi.')
+    }
+    // Nama tanpa ekstensi (unggahan raw): gunakan ekstensi hasil deteksi.
+    sanitized = `${sanitized}.${extension}`
   }
-  const lastExtension = sanitized.slice(lastDot + 1).toLowerCase()
+  const lastExtension = sanitized.slice(sanitized.lastIndexOf('.') + 1).toLowerCase()
   if (lastExtension !== extension) {
     throw new UploadValidationError(
       `Ekstensi file (.${lastExtension}) tidak sesuai dengan isi file. Gunakan .${extension}.`,

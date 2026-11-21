@@ -39,7 +39,13 @@ const statusLabel = computed(() => ({
   SUBMITTED: 'menunggu verifikasi',
   ADMIN_REVIEW: 'menunggu verifikasi',
   APPROVED: 'disetujui',
+  CANCELLED: 'dibatalkan',
+  WITHDRAWN: 'ditarik',
 })[props.request.status] || props.request.status || '-')
+const cancellationBadge = computed(() => ({
+  CANCELLED: 'DIBATALKAN',
+  WITHDRAWN: 'DITARIK',
+})[props.request.status] || '')
 
 function formatDate(value) {
   if (!value) return '-'
@@ -120,7 +126,10 @@ function submit() {
         <div class="pv-document-head">
           <div>
             <h2>Formulir Cuti Pegawai</h2>
-            <p>{{ request.requestNumber }} · {{ request.status === 'DRAFT' ? 'pratinjau dokumen, belum final' : statusLabel }}</p>
+            <p>
+              {{ request.requestNumber }} · {{ request.status === 'DRAFT' ? 'pratinjau dokumen, belum final' : statusLabel }}
+              <span v-if="cancellationBadge" class="pv-cancelled-badge">{{ cancellationBadge }}</span>
+            </p>
           </div>
           <div class="pv-document-actions">
             <span>100%</span>
@@ -190,11 +199,11 @@ function submit() {
         </div>
 
         <p v-if="localError" class="pv-error" role="alert">{{ localError }}</p>
-        <button class="button button-primary pv-primary" type="button" :disabled="submitting || request.status !== 'DRAFT'" @click="submit">
-          <Send :size="14" aria-hidden="true" /> {{ submitting ? 'Mengirim…' : 'Kirim pengajuan' }}
+        <button class="button button-primary pv-primary" type="button" :disabled="submitting || !['DRAFT', 'RETURNED_FOR_REVISION'].includes(request.status)" @click="submit">
+          <Send :size="14" aria-hidden="true" /> {{ submitting ? 'Mengirim…' : request.status === 'RETURNED_FOR_REVISION' ? 'Kirim ulang pengajuan' : 'Kirim pengajuan' }}
         </button>
         <button class="button button-secondary pv-secondary" type="button" @click="emit('save-draft')">
-          <FileText :size="14" aria-hidden="true" /> Simpan sebagai draf
+          <FileText :size="14" aria-hidden="true" /> {{ request.status === 'RETURNED_FOR_REVISION' ? 'Simpan perbaikan' : 'Simpan sebagai draf' }}
         </button>
         <p class="pv-foot"><ShieldCheck :size="12" aria-hidden="true" /> Dengan mengirim, Anda menyetujui snapshot data pada dokumen ini.</p>
       </aside>
@@ -204,57 +213,80 @@ function submit() {
 
 <style scoped>
 .preview-page {
-  --ink: #142f3a; --text: #3d525c; --muted: #5a6f78;
-  --border: #e1e9f1; --divider: #edf2f7; --blue: #0d6efd;
   display: grid; gap: 20px; min-width: 0;
 }
 .pv-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.pv-head h1 { margin: 0 0 6px; font-size: 26px; font-weight: 700; color: var(--ink); }
+.pv-head h1 { margin: 0 0 6px; }
 .pv-head p { margin: 0; color: var(--muted); font-size: 13px; }
 
 .pv-layout { display: grid; grid-template-columns: minmax(0, 716fr) minmax(0, 392fr); gap: 20px; align-items: start; }
-.pv-panel { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+.pv-panel { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card); }
 .pv-document-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.pv-document-head h2 { margin: 0 0 4px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.pv-document-head h2 { margin: 0 0 4px; color: var(--ink); font-size: 16px; font-weight: 600; }
 .pv-document-head p { margin: 0; color: var(--muted); font-size: 10px; }
+
+.pv-cancelled-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--danger-border);
+  border-radius: 4px;
+  color: var(--danger-text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
 .pv-document-actions { display: flex; align-items: center; gap: 12px; }
 .pv-document-actions > span { color: var(--muted); font-size: 10px; }
-.pv-download { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; background: #e9f1ff; color: #1b4fbf; font-size: 10px; font-weight: 600; text-decoration: none; }
+.pv-download { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: var(--radius-control); background: var(--info-bg); color: var(--info-text); font-size: 10px; font-weight: 600; text-decoration: none; }
 .pv-download:hover { text-decoration: underline; }
-.pv-paper { min-height: 620px; padding: 12px; border: 1px solid #d8e2ea; border-radius: 4px; background: var(--card, #fff); }
+.pv-paper { min-height: 620px; padding: 12px; border: 1px solid var(--neutral-border); border-radius: 4px; background: var(--card); }
 .pv-iframe { width: 100%; height: 600px; border: 0; }
 
 .pv-sign hr { margin: 16px 0; border: 0; border-top: 1px solid var(--border); }
-.pv-sign h2 { margin: 0 0 4px; color: var(--ink); font-size: 14px; font-weight: 600; }
-.pv-sign h3 { margin: 16px 0 8px; color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: 0.04em; }
-.pv-sub { margin: 0; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+.pv-sign h2 { margin: 0 0 4px; color: var(--ink); font-size: 16px; font-weight: 600; }
+.pv-sign h3 { margin: 16px 0 8px; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.pv-sub { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .pv-canvas-wrap { position: relative; }
-.pv-canvas { width: 100%; height: 128px; border: 1px solid #8494a1; border-radius: 8px; background: #fff; touch-action: none; cursor: crosshair; }
-.pv-canvas-hint { position: absolute; left: 12px; bottom: 12px; color: var(--muted); font-size: 9px; pointer-events: none; }
+.pv-canvas { width: 100%; height: 128px; border: 1px solid var(--control-border); border-radius: var(--radius-control); background: var(--card); touch-action: none; cursor: crosshair; }
+.pv-canvas-hint { position: absolute; left: 12px; bottom: 12px; color: var(--muted); font-size: 10px; pointer-events: none; }
 .pv-mode-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
-.pv-mode { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text); font-size: 9.5px; font-weight: 600; cursor: pointer; }
-.pv-mode.active { border-color: var(--blue); background: #e9f1ff; color: #1b4fbf; }
+.pv-mode { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; border: 1px solid var(--control-border); border-radius: var(--radius-control); background: var(--card); color: var(--text); font-size: 11px; font-weight: 600; cursor: pointer; }
+.pv-mode.active { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-dark); }
 .pv-upload input { width: 100%; margin-top: 8px; font-size: 10px; }
 .pv-canvas-actions { display: grid; grid-template-columns: 100px 1fr; gap: 8px; margin-top: 8px; }
 .pv-reset-sign { min-height: 34px; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
 .pv-save-sign { min-height: 34px; margin-top: 0; font-size: 10px; }
 .pv-official-list { display: grid; gap: 8px; }
-.pv-official { padding: 10px 12px; border-radius: 8px; background: var(--divider); }
+.pv-official { padding: 10px 12px; border-radius: var(--radius-control); background: var(--subtle); }
 .pv-official strong { display: block; color: var(--ink); font-size: 10px; font-weight: 600; }
-.pv-official small { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
+.pv-official small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 .pv-empty-sign { margin: 0; color: var(--text); font-size: 10px; }
-.pv-info { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; padding: 12px; border-radius: 8px; background: #f4f8ff; color: var(--text); }
-.pv-info svg { flex: 0 0 auto; color: var(--blue); }
-.pv-info p { margin: 0 0 4px; font-size: 9px; line-height: 1.5; }
+.pv-info { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; padding: 12px; border-radius: var(--radius-control); background: var(--primary-tint); color: var(--text); }
+.pv-info svg { flex: 0 0 auto; color: var(--primary); }
+.pv-info p { margin: 0 0 4px; font-size: 11px; line-height: 1.5; }
 .pv-info p:last-child { margin-bottom: 0; }
-.pv-error { margin: 12px 0 0; color: #a11d1d; font-size: 10px; }
+.pv-error { margin: 12px 0 0; color: var(--danger-text); font-size: 11px; }
 .pv-primary { width: 100%; min-height: 46px; margin-top: 16px; }
 .pv-secondary { width: 100%; min-height: 40px; margin-top: 8px; }
 .pv-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.pv-foot { display: flex; align-items: flex-start; gap: 6px; margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.pv-foot { display: flex; align-items: flex-start; gap: 6px; margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .pv-foot svg { flex: 0 0 auto; }
 
-@media (max-width: 1180px) {
+@media (max-width: 1200px) {
   .pv-layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .pv-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .pv-head h1 { font-size: 22px; }
+  .pv-head > .button { width: 100%; min-height: 44px; justify-content: center; }
+  .pv-panel { padding: 16px; }
+  .pv-document-head { flex-direction: column; }
+  .pv-document-actions { flex-wrap: wrap; gap: 8px; }
+  .pv-paper { min-height: 420px; padding: 8px; }
+  .pv-iframe { height: 420px; }
+  .pv-canvas-actions { grid-template-columns: 1fr; }
+  .pv-canvas-actions .button { min-height: 44px; }
 }
 </style>

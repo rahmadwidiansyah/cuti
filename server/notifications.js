@@ -140,6 +140,21 @@ export async function notifyRequestLifecycle(client, params = {}) {
       break
     }
 
+    case 'RESUBMIT':
+    case 'RESUBMITTED': {
+      // Pengajuan dikirim ulang setelah diperbaiki -> antrean Admin lagi.
+      await notifyRoleUsers(client, 'ADMIN', {
+        leaveRequestId: reqId,
+        type: 'LEAVE_RESUBMITTED',
+        title: 'Pengajuan Cuti Dikirim Ulang',
+        body: `Pengajuan cuti nomor ${reqNum} dari ${empName} telah diperbaiki dan kembali menunggu verifikasi Admin.`,
+        actionUrl,
+        severity: 'ACTION',
+        dedupePrefix: `RESUBMIT:${reqId}`,
+      })
+      break
+    }
+
     case 'VERIFY':
     case 'VERIFIED': {
       // AT-N03: Admin memverifikasi -> Notifikasi ke Analis SDM untuk pertimbangan

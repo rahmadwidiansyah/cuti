@@ -198,7 +198,7 @@ function onInput(event) {
 }
 function cellStyle(marker) {
   if (!marker) return {}
-  const color = marker.color || '#6c757d'
+  const color = marker.color || '#5a6f78'
   return {
     '--dp-marker-color': color,
     '--dp-marker-soft': `${color}1f`,
@@ -248,7 +248,7 @@ onBeforeUnmount(() => {
 
       <div class="dp-weekdays" aria-hidden="true"><span v-for="day in weekDays" :key="day">{{ day }}</span></div>
       <div class="dp-grid" role="grid">
-        <template v-for="(week, wi) in grid" :key="wi">
+        <div v-for="(week, wi) in grid" :key="wi" class="dp-grid-row" role="row">
           <button
             v-for="cell in week"
             :key="cell.value"
@@ -272,7 +272,7 @@ onBeforeUnmount(() => {
             <span class="dp-cell-day">{{ cell.date }}</span>
             <span v-if="cell.marker" class="dp-marker-dot" :title="cell.markerTitle"></span>
           </button>
-        </template>
+        </div>
       </div>
 
       <div v-if="showMarkers && legendCategories.length" class="dp-legend">
@@ -288,19 +288,19 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .date-picker { position: relative; display: grid; gap: 6px; min-width: 0; }
-.dp-label { color: var(--muted, #5a6f78); font-size: 10.5px; font-weight: 600; }
+.dp-label { color: var(--muted); font-size: 10.5px; font-weight: 600; }
 .dp-input-wrap {
   position: relative; display: flex; align-items: center; gap: 8px;
-  width: 100%; min-width: 0; height: 40px; padding: 0 8px 0 12px;
-  border: 1px solid #8494a1; border-radius: 8px; background: #fff; color: #6e8590;
+  width: 100%; min-width: 0; height: 44px; padding: 0 8px 0 12px;
+  border: 1px solid var(--control-border); border-radius: var(--radius-control); background: var(--card); color: var(--muted);
 }
-.dp-input-wrap:focus-within, .dp-input-wrap.open { border-color: var(--blue, #0d6efd); box-shadow: 0 0 0 3px rgba(13,110,253,.12); }
+.dp-input-wrap:focus-within, .dp-input-wrap.open { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 .dp-input-wrap.disabled { opacity: .55; }
 .dp-input-icon { flex: 0 0 auto; }
-.dp-input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text, #3d525c); font-size: 13px; }
+.dp-input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; }
 .dp-toggle {
   flex: 0 0 auto; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 6px; background: transparent; color: var(--muted, #5a6f78); cursor: pointer;
+  border: 0; border-radius: var(--radius-control); background: transparent; color: var(--muted); cursor: pointer;
 }
 .dp-toggle svg { transform: rotate(90deg); }
 .dp-open .dp-toggle svg, .dp-input-wrap.open .dp-toggle svg { transform: rotate(-90deg); }
@@ -308,38 +308,39 @@ onBeforeUnmount(() => {
 .dp-popover {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 200;
   width: 320px; max-width: calc(100vw - 32px);
-  padding: 12px; border: 1px solid var(--border, #e1e9f1); border-radius: 12px;
-  background: #fff; box-shadow: 0 14px 36px rgba(20,47,58,.16);
+  padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-panel);
+  background: var(--card); box-shadow: var(--shadow-dropdown);
   animation: dpIn .14s ease-out;
 }
 @keyframes dpIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 .dp-toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
-.dp-month { flex: 1; font-size: 13px; color: var(--ink, #142f3a); }
-.dp-nav { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 7px; background: var(--subtle, #f3f6fa); color: var(--muted, #5a6f78); cursor: pointer; }
-.dp-nav:hover { background: var(--border, #e1e9f1); }
-.dp-today { border: 0; background: transparent; color: var(--blue, #0d6efd); font-size: 11px; font-weight: 600; cursor: pointer; }
-.dp-version { margin-bottom: 6px; color: var(--muted, #5a6f78); font-size: 10px; }
-.dp-error { margin: 0 0 6px; color: #a11d1d; font-size: 10px; }
+.dp-month { flex: 1; font-size: 13px; color: var(--ink); }
+.dp-nav { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-control); background: var(--subtle); color: var(--muted); cursor: pointer; }
+.dp-nav:hover { background: var(--primary-tint); }
+.dp-today { border: 0; background: transparent; color: var(--primary-dark); font-size: 11px; font-weight: 600; cursor: pointer; }
+.dp-version { margin-bottom: 6px; color: var(--muted); font-size: 10px; }
+.dp-error { margin: 0 0 6px; color: var(--danger-text); font-size: 10px; }
 .dp-weekdays { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; margin-bottom: 4px; }
-.dp-weekdays span { text-align: center; font-size: 9px; font-weight: 600; color: var(--muted, #5a6f78); }
-.dp-grid { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; }
+.dp-weekdays span { text-align: center; font-size: 10px; font-weight: 600; color: var(--muted); }
+.dp-grid { display: grid; gap: 4px; }
+.dp-grid-row { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; }
 .dp-cell {
   position: relative; height: 36px; display: flex; align-items: center; justify-content: center;
-  border: 1px solid transparent; border-radius: 7px; background: transparent;
-  color: var(--text, #3d525c); font-size: 11px; font-weight: 600; cursor: pointer;
+  border: 1px solid transparent; border-radius: var(--radius-control); background: transparent;
+  color: var(--text); font-size: 11px; font-weight: 600; cursor: pointer;
 }
-.dp-cell:hover:not(:disabled) { background: var(--subtle, #f3f6fa); }
-.dp-cell.outside { color: #aab8c1; }
-.dp-cell.weekend:not(.outside) { color: #7d8f99; }
+.dp-cell:hover:not(:disabled) { background: var(--subtle); }
+.dp-cell.outside { color: var(--muted); opacity: .7; }
+.dp-cell.weekend:not(.outside) { color: var(--muted); }
 .dp-cell.has-marker { background: var(--dp-marker-soft); color: var(--dp-marker-color); border-color: var(--dp-marker-color); }
-.dp-cell.today { border-color: var(--blue, #0d6efd); }
-.dp-cell.selected { background: var(--blue, #0d6efd); color: #fff; border-color: var(--blue, #0d6efd); }
+.dp-cell.today { border-color: var(--primary); }
+.dp-cell.selected { background: var(--primary); color: var(--on-dark); border-color: var(--primary); }
 .dp-cell.disabled { opacity: .35; cursor: not-allowed; }
 .dp-cell-day { line-height: 1; }
 .dp-marker-dot { position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%); width: 4px; height: 4px; border-radius: 50%; background: var(--dp-marker-color); }
-.dp-cell.selected .dp-marker-dot { background: #fff; }
-.dp-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--divider, #edf2f7); }
-.dp-legend-item { display: inline-flex; align-items: center; gap: 4px; font-size: 9px; color: var(--muted, #5a6f78); }
+.dp-cell.selected .dp-marker-dot { background: var(--on-dark); }
+.dp-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--divider); }
+.dp-legend-item { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); }
 .dp-legend-item i { width: 7px; height: 7px; border-radius: 2px; }
-.dp-hint { margin-top: 8px; color: var(--muted, #5a6f78); font-size: 10px; }
+.dp-hint { margin-top: 8px; color: var(--muted); font-size: 10px; }
 </style>

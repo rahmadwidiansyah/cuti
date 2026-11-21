@@ -94,7 +94,9 @@ jobs:
           file: ./Dockerfile
           target: app
           build-args: |
-            VITE_SHOW_DEMO_LOGIN=${{ vars.VITE_SHOW_DEMO_LOGIN || 'true' }}
+            # Audit T7: fail-closed — bubble demo hanya aktif bila var repo
+            # VITE_SHOW_DEMO_LOGIN di-set 'true' secara eksplisit.
+            VITE_SHOW_DEMO_LOGIN=${{ vars.VITE_SHOW_DEMO_LOGIN || 'false' }}
           push: true
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.sha }}
@@ -112,7 +114,7 @@ jobs:
           docker buildx build \
             --target app \
             --load \
-            --build-arg VITE_SHOW_DEMO_LOGIN=${{ vars.VITE_SHOW_DEMO_LOGIN || 'true' }} \
+            --build-arg VITE_SHOW_DEMO_LOGIN=${{ vars.VITE_SHOW_DEMO_LOGIN || 'false' }} \
             --cache-from type=gha,scope=app \
             -t cuti-app:size-check .
           bytes=$(docker image inspect cuti-app:size-check --format '{{.Size}}')

@@ -1,6 +1,9 @@
 <script setup>
 import { computed } from 'vue'
 import { ArrowRight, CalendarDays, CheckCircle2, Clock3, FileText, RotateCcw } from 'lucide-vue-next'
+import StatusPill from './StatusPill.vue'
+import { statusLabel } from '../status.js'
+import { formatDateRange } from '../dates.js'
 
 const props = defineProps({
   dashboard: { type: Object, default: null },
@@ -20,19 +23,6 @@ const allocated = computed(() => Number(balance.value?.allocated_days || 0))
 const total = computed(() => Math.max(1, used.value + reserved.value + available.value))
 const warning = computed(() => available.value < 3 && requests.value.some(item => ['SUBMITTED', 'ADMIN_REVIEW', 'PERTIMBANGAN_REVIEW'].includes(item.status)))
 
-const statusLabels = {
-  DRAFT: 'Draf', SUBMITTED: 'Menunggu verifikasi', ADMIN_REVIEW: 'Menunggu verifikasi',
-  ADMIN_VERIFIED: 'Diteruskan', PERTIMBANGAN_REVIEW: 'Pertimbangan SDM',
-  KASUBAG_REVIEW: 'Antrean Kasubag', KEPSTA_REVIEW: 'Menunggu Kepsta', PPK_REVIEW: 'Menunggu PPK',
-  RETURNED_FOR_REVISION: 'Dikembalikan', APPROVED: 'Disetujui', REJECTED: 'Tidak disetujui',
-  WITHDRAWN: 'Dibatalkan pegawai', CANCELLED: 'Dibatalkan Admin',
-}
-function statusTone(status) {
-  if (['APPROVED'].includes(status)) return 'green'
-  if (['RETURNED_FOR_REVISION', 'REJECTED', 'CANCELLED'].includes(status)) return 'red'
-  if (['SUBMITTED', 'ADMIN_REVIEW', 'PERTIMBANGAN_REVIEW', 'KASUBAG_REVIEW', 'KEPSTA_REVIEW', 'PPK_REVIEW'].includes(status)) return 'amber'
-  return 'neutral'
-}
 function formatDate(value) {
   if (!value) return '-'
   const date = new Date(`${String(value).slice(0, 10)}T12:00:00Z`)
@@ -48,7 +38,7 @@ function formatDate(value) {
         <section class="ds-panel ds-balance">
           <div class="ds-balance-head">
             <div>
-              <p class="ds-eyebrow">SALDO CUTI TAHUNAN · {{ year }}</p>
+              <p class="eyebrow">SALDO CUTI TAHUNAN · {{ year }}</p>
               <strong class="ds-big">{{ available }} <span>hari tersedia</span></strong>
               <span v-if="warning" class="ds-warning">Tidak cukup untuk 1 pengajuan 5 hari</span>
             </div>
@@ -83,17 +73,31 @@ function formatDate(value) {
               <tr v-for="(item, index) in requests" :key="item.id">
                 <td>
                   <button class="ds-request-link" type="button" @click="emit('detail', item.id)">{{ item.request_number }}</button>
-                  <small>Tahap: {{ statusLabels[item.status] || item.status }}</small>
+                  <small>Tahap: {{ statusLabel(item.status) }}</small>
                 </td>
                 <td>{{ item.leave_type_name }}</td>
-                <td>{{ formatDate(item.start_date) }} s.d. {{ formatDate(item.end_date) }}</td>
+                <td>{{ formatDateRange(item.start_date, item.end_date) }}</td>
                 <td>{{ item.requested_working_days }} hari</td>
-                <td><span class="ds-badge" :class="`ds-badge-${statusTone(item.status)}`">{{ statusLabels[item.status] || item.status }}</span></td>
+                <td><StatusPill :status="item.status" /></td>
                 <td><button class="ds-icon-button" type="button" :aria-label="`Buka ${item.request_number}`" @click="emit('detail', item.id)"><ArrowRight :size="14" aria-hidden="true" /></button></td>
               </tr>
               <tr v-if="!requests.length"><td colspan="6" class="ds-empty">Belum ada pengajuan. Mulai dengan mengajukan cuti.</td></tr>
             </tbody>
           </table>
+          <div v-if="requests.length" class="ds-cards">
+            <article v-for="item in requests" :key="`card-${item.id}`" class="ds-card">
+              <div class="ds-card-head">
+                <button class="ds-request-link" type="button" @click="emit('detail', item.id)">{{ item.request_number }}</button>
+                <StatusPill :status="item.status" />
+              </div>
+              <p class="ds-card-title">{{ item.leave_type_name }}</p>
+              <dl class="ds-card-facts">
+                <div><dt>Tanggal cuti</dt><dd>{{ formatDateRange(item.start_date, item.end_date) }}</dd></div>
+                <div><dt>Durasi</dt><dd>{{ item.requested_working_days }} hari</dd></div>
+              </dl>
+              <button class="button button-secondary button-small" type="button" @click="emit('detail', item.id)">Buka pengajuan</button>
+            </article>
+          </div>
         </section>
 
         <button class="ds-how" type="button" @click="emit('apply')">
@@ -119,13 +123,17 @@ function formatDate(value) {
           <p class="ds-footnote">Angka ini terpisah dari saldo cuti tahunan.</p>
         </section>
 
-        <section v-if="returnedCount" class="ds-panel ds-returned">
+        <section class="ds-panel ds-returned">
           <span class="ds-returned-icon"><RotateCcw :size="18" aria-hidden="true" /></span>
           <div>
-            <strong>{{ returnedCount }} pengajuan dikembalikan</strong>
-            <small>Perbaiki pengajuan yang dikembalikan petugas.</small>
+            <strong v-if="returnedCount">{{ returnedCount }} pengajuan dikembalikan</strong>
+            <strong v-else>Tidak ada pengajuan dikembalikan</strong>
+            <small v-if="returnedCount">Perbaiki pengajuan yang dikembalikan petugas.</small>
+            <small v-else>Pengajuan yang dikembalikan akan tampil di sini.</small>
           </div>
-          <button class="ds-wide-button" type="button" @click="emit('history')">Perbaiki pengajuan</button>
+          <button class="button button-soft button-wide" type="button" @click="emit('history')">
+            {{ returnedCount ? 'Perbaiki pengajuan' : 'Lihat riwayat' }}
+          </button>
         </section>
 
         <section class="ds-panel">
@@ -143,73 +151,80 @@ function formatDate(value) {
 </template>
 
 <style scoped>
-.dash { --ink:#142f3a; --text:#3d525c; --muted:#5a6f78; --border:#e1e9f1; display:grid; gap:20px; min-width:0; }
+.dash { display:grid; gap:20px; min-width:0; }
 .dash-grid { display:grid; grid-template-columns:minmax(0, 716fr) minmax(0, 392fr); gap:20px; align-items:start; }
 .dash-main, .dash-side { display:grid; gap:20px; min-width:0; }
-.ds-panel { min-width:0; padding:20px; border:1px solid var(--border); border-radius:12px; background:#fff; }
-.ds-panel h2 { margin:0 0 6px; color:var(--ink); font-size:14px; font-weight:600; }
+.ds-panel { min-width:0; padding:20px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--card); }
+.ds-panel h2 { margin:0 0 6px; color:var(--ink); font-size:16px; font-weight:600; }
 .ds-muted { margin:0; color:var(--muted); font-size:11px; }
-.ds-eyebrow { margin:0 0 6px; color:var(--muted); font-size:10px; font-weight:600; letter-spacing:.04em; }
-.ds-big { display:block; color:var(--ink); font-size:38px; font-weight:700; line-height:1.1; }
+.ds-big { display:block; color:var(--ink); font-size:34px; font-weight:700; line-height:1.2; font-variant-numeric:tabular-nums; }
 .ds-big span { font-size:13px; font-weight:500; color:var(--muted); }
-.ds-warning { display:inline-flex; margin-top:8px; padding:3px 10px; border-radius:11px; background:#fff6de; color:#8a5a00; font-size:9px; font-weight:600; }
+.ds-warning { display:inline-flex; margin-top:8px; padding:3px 8px; border:1px solid var(--warning-border); border-radius:999px; background:var(--warning-bg); color:var(--warning-text); font-size:10px; font-weight:650; }
 .ds-balance-head { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
-.ds-breakdown { display:grid; gap:7px; padding-left:24px; border-left:1px solid var(--border); }
+.ds-breakdown { display:grid; gap:8px; padding-left:24px; border-left:1px solid var(--border); }
 .ds-breakdown > div { display:flex; justify-content:space-between; gap:12px; font-size:11px; }
 .ds-breakdown span { color:var(--muted); }
 .ds-breakdown strong { color:var(--ink); }
-.ds-track { display:flex; height:10px; margin-top:18px; border-radius:5px; overflow:hidden; background:#edf2f7; }
+.ds-track { display:flex; height:10px; margin-top:18px; border-radius:5px; overflow:hidden; background:var(--divider); }
 .ds-track span { display:block; height:100%; }
-.ds-used { background:#0d6efd; }
-.ds-reserved { background:#8a5a00; }
-.ds-available { background:#c9d8e5; }
-.ds-legend { display:flex; gap:16px; margin-top:10px; color:var(--muted); font-size:10px; }
+.ds-used { background:var(--primary); }
+.ds-reserved { background:var(--reserved); }
+.ds-available { background:var(--available); }
+.ds-legend { display:flex; gap:16px; margin-top:10px; color:var(--muted); font-size:11px; }
 .ds-legend span { display:flex; align-items:center; gap:6px; }
 .ds-dot { width:8px; height:8px; border-radius:50%; }
-.ds-dot-used { background:#0d6efd; }
-.ds-dot-reserved { background:#8a5a00; }
-.ds-dot-available { background:#c9d8e5; }
+.ds-dot-used { background:var(--primary); }
+.ds-dot-reserved { background:var(--reserved); }
+.ds-dot-available { background:var(--available); }
 .ds-section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
 .ds-section-head h2 { margin:0; }
-.ds-link { display:inline-flex; align-items:center; gap:4px; padding:0; border:0; background:transparent; color:var(--blue,#0d6efd); font-size:11px; font-weight:600; cursor:pointer; }
+.ds-link { display:inline-flex; align-items:center; gap:4px; padding:0; border:0; background:transparent; color:var(--primary-dark); font-size:11px; font-weight:600; cursor:pointer; }
 .ds-link:hover { text-decoration:underline; }
 .ds-table { width:100%; border-collapse:collapse; }
-.ds-table th { padding:0 8px 10px; border-bottom:1px solid var(--border); color:var(--muted); font-size:9px; font-weight:600; letter-spacing:.03em; text-align:left; text-transform:uppercase; }
-.ds-table td { padding:11px 8px; border-bottom:1px solid #edf2f7; color:var(--text); font-size:10.5px; }
+.ds-table th { padding:0 8px 10px; border-bottom:1px solid var(--border); color:var(--muted); font-size:9.5px; font-weight:700; letter-spacing:.06em; text-align:left; text-transform:uppercase; }
+.ds-table td { padding:12px 8px; border-bottom:1px solid var(--divider); color:var(--text); font-size:12px; }
 .ds-table th:first-child, .ds-table td:first-child { padding-left:0; }
 .ds-table th:last-child, .ds-table td:last-child { padding-right:0; }
-.ds-request-link { padding:0; border:0; background:transparent; color:#0d6efd; font-size:10.5px; font-weight:600; cursor:pointer; }
+.ds-request-link { padding:0; border:0; background:transparent; color:var(--primary); font-size:12px; font-weight:650; cursor:pointer; }
 .ds-request-link:hover { text-decoration:underline; }
-.ds-table td small { display:block; margin-top:2px; color:var(--muted); font-size:9px; }
-.ds-badge { display:inline-flex; align-items:center; height:20px; padding:0 8px; border-radius:10px; font-size:9px; font-weight:600; white-space:nowrap; }
-.ds-badge-green { background:#e4f7ec; color:#0b6b45; }
-.ds-badge-red { background:#fde9e9; color:#a11d1d; }
-.ds-badge-amber { background:#fff6de; color:#8a5a00; }
-.ds-badge-neutral { background:#edf2f6; color:var(--text); }
-.ds-icon-button { width:28px; height:28px; border:0; border-radius:8px; background:transparent; color:var(--text); cursor:pointer; }
-.ds-icon-button:hover { background:#f7f9fc; }
+.ds-table td small { display:block; margin-top:2px; color:var(--muted); font-size:10px; }
+.ds-icon-button { width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:var(--radius-control); background:transparent; color:var(--text); cursor:pointer; }
+.ds-icon-button:hover { background:var(--subtle); }
 .ds-empty { padding:24px 0; text-align:center; color:var(--muted); }
-.ds-how { display:flex; align-items:center; gap:10px; padding:16px; border:1px solid #c9dafb; border-radius:12px; background:#f4f8ff; text-align:left; cursor:pointer; }
+.ds-cards { display:none; }
+.ds-card { display:grid; gap:10px; padding:14px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--card); }
+.ds-card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.ds-card-title { margin:0; color:var(--ink); font-size:12.5px; font-weight:600; }
+.ds-card-facts { display:grid; gap:6px; margin:0; }
+.ds-card-facts > div { display:flex; justify-content:space-between; gap:12px; }
+.ds-card-facts dt { color:var(--muted); font-size:11px; }
+.ds-card-facts dd { margin:0; color:var(--text); font-size:11px; text-align:right; }
+.ds-card > .button { justify-content:center; }
+.ds-how { display:flex; align-items:center; gap:10px; padding:16px; border:1px solid var(--info-border); border-radius:var(--radius-panel); background:var(--primary-tint); text-align:left; cursor:pointer; }
 .ds-how > div { flex:1; min-width:0; }
 .ds-how strong { display:block; color:var(--ink); font-size:11px; }
-.ds-how small { display:block; margin-top:2px; color:var(--muted); font-size:9px; }
-.ds-how-icon { width:22px; height:22px; flex:0 0 auto; border-radius:50%; background:#e9f1ff; color:#1b4fbf; display:inline-flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; }
-.ds-how > svg { color:#6e8590; flex:0 0 auto; }
+.ds-how small { display:block; margin-top:2px; color:var(--muted); font-size:10px; }
+.ds-how-icon { width:22px; height:22px; flex:0 0 auto; border-radius:50%; background:var(--info-bg); color:var(--info-text); display:inline-flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; }
+.ds-how > svg { color:var(--muted); flex:0 0 auto; }
 .ds-nonannual { list-style:none; margin:14px 0 0; padding:0; display:grid; gap:8px; }
 .ds-nonannual li { display:flex; justify-content:space-between; gap:12px; font-size:11px; }
 .ds-nonannual li span { color:var(--text); }
 .ds-nonannual li strong { color:var(--ink); }
-.ds-footnote { margin:14px 0 0; color:var(--muted); font-size:9px; }
+.ds-footnote { margin:14px 0 0; color:var(--muted); font-size:10px; }
 .ds-returned { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-.ds-returned-icon { width:36px; height:36px; flex:0 0 auto; border-radius:50%; background:#fff6de; color:#8a5a00; display:inline-flex; align-items:center; justify-content:center; }
+.ds-returned-icon { width:36px; height:36px; flex:0 0 auto; border-radius:50%; background:var(--warning-bg); color:var(--warning-text); display:inline-flex; align-items:center; justify-content:center; }
 .ds-returned > div { flex:1; min-width:0; }
 .ds-returned strong { display:block; color:var(--ink); font-size:11px; }
-.ds-returned small { display:block; margin-top:2px; color:var(--muted); font-size:9px; }
-.ds-wide-button { width:100%; min-height:34px; border:0; border-radius:8px; background:#e9f1ff; color:#1b4fbf; font-size:11px; font-weight:600; cursor:pointer; }
+.ds-returned small { display:block; margin-top:2px; color:var(--muted); font-size:10px; }
 .ds-policy { list-style:none; margin:12px 0; padding:0; display:grid; gap:10px; }
 .ds-policy li { display:flex; align-items:center; gap:8px; color:var(--text); font-size:11px; }
 .ds-policy svg { color:var(--muted); flex:0 0 auto; }
 
-@media (max-width:1180px){ .dash-grid{ grid-template-columns:1fr; } }
+@media (max-width:1200px){ .dash-grid{ grid-template-columns:1fr; } }
+@media (max-width:700px){
+  .ds-table { display:none; }
+  .ds-cards { display:grid; gap:10px; }
+  .ds-panel { padding:16px; }
+}
 @media (max-width:640px){ .ds-balance-head{ grid-template-columns:1fr; } .ds-breakdown{ padding-left:0; border-left:0; } .ds-how{ flex-wrap:wrap; } }
 </style>

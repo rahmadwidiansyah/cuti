@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { Camera, CheckCircle2, Download, Eye, FileImage, Loader2, RotateCcw, ShieldCheck, Trash2, Upload, UserRound } from 'lucide-vue-next'
+import { confirmAction, successDialog } from '../sweetalert.js'
 
 const emit = defineEmits(['back'])
 
@@ -94,6 +95,12 @@ function resetAvatarSelection() {
 
 async function saveAvatar() {
   if (!avatarFile.value) return
+  const ok = await confirmAction({
+    title: 'Unggah foto profil ini?',
+    text: 'Foto profil tampil pada akun Anda di seluruh aplikasi.',
+    confirmText: 'Ya, unggah',
+  })
+  if (!ok) return
   savingAvatar.value = true
   error.value = ''
   notice.value = ''
@@ -104,6 +111,7 @@ async function saveAvatar() {
     notice.value = 'Foto profil berhasil disimpan.'
     resetAvatarSelection()
     await loadProfile()
+    await successDialog({ title: 'Foto profil tersimpan', text: 'Foto profil berhasil diperbarui.' })
   } catch (e) {
     error.value = e.message
   } finally {
@@ -112,6 +120,13 @@ async function saveAvatar() {
 }
 
 async function removeAvatar() {
+  const ok = await confirmAction({
+    title: 'Hapus foto profil?',
+    text: 'Foto profil akan dihapus dari akun Anda.',
+    confirmText: 'Ya, hapus',
+    danger: true,
+  })
+  if (!ok) return
   error.value = ''
   notice.value = ''
   try {
@@ -140,6 +155,12 @@ function resetSignatureSelection() {
 
 async function saveSignature() {
   if (!signatureFile.value) return
+  const ok = await confirmAction({
+    title: 'Simpan tanda tangan digital ini?',
+    text: 'Tanda tangan dipakai pada dokumen keputusan cuti Anda.',
+    confirmText: 'Ya, simpan',
+  })
+  if (!ok) return
   savingSignature.value = true
   error.value = ''
   notice.value = ''
@@ -152,6 +173,7 @@ async function saveSignature() {
     notice.value = 'Tanda tangan digital berhasil disimpan.'
     resetSignatureSelection()
     await loadProfile()
+    await successDialog({ title: 'Tanda tangan tersimpan', text: 'Tanda tangan digital berhasil disimpan.' })
   } catch (e) {
     error.value = e.message
   } finally {
@@ -302,11 +324,10 @@ function avatarSrc() {
 </template>
 
 <style scoped>
-.profile-page { --ink:#142f3a; --text:#3d525c; --muted:#5a6f78; --border:#e1e9f1; --divider:#edf2f7; --blue:#0d6efd; display:grid; gap:18px; min-width:0; }
+.profile-page { display:grid; gap:20px; min-width:0; }
 .profile-intro { margin:0; color:var(--muted); font-size:12px; }
-.profile-grid { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap:18px; align-items:start; }
-.panel { min-width:0; padding:20px; border:1px solid var(--border); border-radius:12px; background:#fff; }
-.panel h2 { margin:0 0 14px; color:var(--ink); font-size:14px; font-weight:650; }
+.profile-grid { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap:20px; align-items:start; }
+.panel h2 { margin:0 0 14px; color:var(--ink); font-size:16px; font-weight:600; }
 .pf-sub { margin:0 0 12px; color:var(--muted); font-size:11px; }
 .pf-signature { grid-column:1 / -1; }
 .pf-facts { display:grid; gap:12px; margin:0; }
@@ -314,27 +335,27 @@ function avatarSrc() {
 .pf-facts dd { margin:2px 0 0; color:var(--ink); font-size:12px; font-weight:600; }
 .pf-hint { display:flex; align-items:center; gap:6px; margin:12px 0 0; color:var(--muted); font-size:10px; line-height:1.5; }
 .pf-avatar-row { display:flex; align-items:center; gap:14px; }
-.pf-avatar-preview { width:72px; height:72px; flex:0 0 auto; border-radius:50%; overflow:hidden; background:#e9f1ff; display:flex; align-items:center; justify-content:center; }
+.pf-avatar-preview { width:72px; height:72px; flex:0 0 auto; border-radius:50%; overflow:hidden; background:var(--info-bg); display:flex; align-items:center; justify-content:center; }
 .pf-avatar-preview img { width:100%; height:100%; object-fit:cover; }
-.pf-avatar-initial { color:#0b5ed7; font-size:24px; font-weight:700; }
+.pf-avatar-initial { color:var(--primary-dark); font-size:24px; font-weight:700; }
 .pf-avatar-info { min-width:0; display:grid; gap:3px; }
 .pf-avatar-info strong { color:var(--ink); font-size:12px; }
 .pf-avatar-info small { color:var(--muted); font-size:10px; }
 .pf-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:14px; }
-.pf-signature-status { display:flex; align-items:center; gap:8px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--divider,#f8fafc); font-size:11px; color:var(--text); }
+.pf-signature-status { display:flex; align-items:center; gap:8px; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius-control); background:var(--canvas); font-size:11px; color:var(--text); }
 .pf-signature-status span { flex:1; }
-.pf-ok { color:#0b6b45; }
+.pf-ok { color:var(--success-text); }
 .pf-mode-switch { margin:12px 0; }
-.pf-mode { padding:6px 12px; border:1px solid var(--blue); border-radius:8px; background:#e9f1ff; color:#1b4fbf; font-size:10px; font-weight:600; }
+.pf-mode { padding:6px 12px; border:1px solid var(--info-border); border-radius:var(--radius-control); background:var(--info-bg); color:var(--info-text); font-size:10px; font-weight:600; }
 .pf-sign-layout { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(200px,1fr); gap:16px; align-items:start; }
-.pf-canvas { width:100%; height:160px; border:1px solid #8494a1; border-radius:8px; background:#fff; touch-action:none; cursor:crosshair; }
+.pf-canvas { width:100%; height:160px; border:1px solid var(--control-border); border-radius:var(--radius-control); background:var(--card); touch-action:none; cursor:crosshair; }
 .pf-canvas-actions { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
 .pf-upload { display:block; margin-top:10px; color:var(--muted); font-size:10px; }
 .pf-upload .button { margin-top:6px; }
 .pf-sign-preview { display:grid; gap:6px; }
 .pf-preview-label { color:var(--muted); font-size:10px; font-weight:600; }
-.pf-sign-box { min-height:120px; padding:8px; border:1px dashed var(--border); border-radius:8px; background:#fff; display:flex; align-items:center; justify-content:center; }
+.pf-sign-box { min-height:120px; padding:8px; border:1px dashed var(--border); border-radius:var(--radius-control); background:var(--card); display:flex; align-items:center; justify-content:center; }
 .pf-sign-box img { max-width:100%; max-height:104px; object-fit:contain; }
 .pf-sign-empty { color:var(--muted); font-size:10px; }
-@media (max-width:1000px){ .profile-grid{grid-template-columns:1fr;} .pf-sign-layout{grid-template-columns:1fr;} }
+@media (max-width:1024px){ .profile-grid{grid-template-columns:1fr;} .pf-sign-layout{grid-template-columns:1fr;} }
 </style>

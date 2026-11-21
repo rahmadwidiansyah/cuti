@@ -1,10 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { downloadPdf } from './download.js'
+import { confirmAction, successDialog } from './sweetalert.js'
 import {
-  ArrowLeft, CalendarDays, ChartColumn, ChevronDown, CircleHelp, Download, History,
-  Inbox, LayoutDashboard, LogOut, Plus, QrCode, RotateCcw, Search, ShieldCheck,
-  Upload, UserRound, Users, UsersRound, Wallet, X,
+  ArrowLeft, CalendarDays, ChevronDown, CircleHelp, Download, LogOut, Plus,
+  RotateCcw, Settings2, Upload, UserRound, X,
 } from 'lucide-vue-next'
 import AdminManagement from './components/AdminManagement.vue'
 import AdminDirectory from './components/AdminDirectory.vue'
@@ -25,14 +25,17 @@ import ReportsManagement from './components/ReportsManagement.vue'
 import AuditLogManagement from './components/AuditLogManagement.vue'
 import TeamManagement from './components/TeamManagement.vue'
 import MetricCard from './components/MetricCard.vue'
+import StatusPill from './components/StatusPill.vue'
+import AppTopBar from './components/AppTopBar.vue'
+import MobileNavDrawer from './components/MobileNavDrawer.vue'
+import PageHeader from './components/PageHeader.vue'
+import StateView from './components/StateView.vue'
+import { statusLabel } from './status.js'
+import { navItemsFor } from './nav.js'
+import { formatDateRange } from './dates.js'
 
 const user = ref(null)
 const calendarRef = ref(null)
-const queueRef = ref(null)
-const directoryRef = ref(null)
-const reportsRef = ref(null)
-const auditRef = ref(null)
-const approvalRef = ref(null)
 const cancelRef = ref(null)
 const previewRef = ref(null)
 const previewRequestId = ref(null)
@@ -55,6 +58,7 @@ const globalSearch = ref('')
 const globalFilter = ref('')
 const accountMenuOpen = ref(false)
 const guideOpen = ref(false)
+const drawerOpen = ref(false)
 const returnView = ref('dashboard')
 const requestId = ref(null)
 const loginForm = reactive({ username: '', password: '' })
@@ -103,6 +107,8 @@ const queue = ref([])
 const history = ref([])
 const historyFilters = reactive({ year: '', leaveType: '', status: '', startDate: '', endDate: '', q: '' })
 const historyPage = ref(0)
+// Ukuran halaman riwayat — juga dikirim ke komponen pager (20 item/halaman).
+const historyPageSize = 20
 const historyTotal = ref(0)
 const historyYears = ref([])
 const historyStatuses = [
@@ -151,6 +157,8 @@ const profileAvatarUrl = ref('')
 const notifPanel = ref(false)
 const notifications = ref([])
 const notifUnread = ref(0)
+const notifLoading = ref(false)
+const notifError = ref('')
 let notifPollTimer = null
 
 function startNotifPoll() {
@@ -163,11 +171,17 @@ function stopNotifPoll() {
   if (notifPollTimer) { clearInterval(notifPollTimer); notifPollTimer = null }
 }
 async function loadNotifications() {
+  notifLoading.value = true
+  notifError.value = ''
   try {
     const data = await api('/notifications')
     notifications.value = data.items || []
     notifUnread.value = Number(data.unreadCount || 0)
-  } catch (_) { /* silent */ }
+  } catch (error) {
+    notifError.value = errorText(error)
+  } finally {
+    notifLoading.value = false
+  }
 }
 
 async function loadAvatar() {
@@ -185,6 +199,13 @@ async function markNotifRead(id) {
   await loadNotifications()
 }
 async function markAllNotifRead() {
+  const ok = await confirmAction({
+    title: 'Tandai semua pemberitahuan dibaca?',
+    text: 'Semua pemberitahuan akan ditandai sudah dibaca.',
+    confirmText: 'Ya, tandai',
+    icon: 'info',
+  })
+  if (!ok) return
   try {
     await api('/notifications/read-all', { method: 'POST' })
     await loadNotifications()
@@ -195,7 +216,13 @@ async function markAllNotifRead() {
 
 async function clearNotifAll() {
   if (!notifications.value.length) return
-  if (!window.confirm('Hapus semua pemberitahuan? Tindakan ini tidak dapat dibatalkan.')) return
+  const ok = await confirmAction({
+    title: 'Hapus semua pemberitahuan?',
+    text: 'Seluruh pemberitahuan akan dihapus. Tindakan ini tidak dapat dibatalkan.',
+    confirmText: 'Ya, hapus',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api('/notifications', { method: 'DELETE' })
     notifications.value = []
@@ -206,6 +233,13 @@ async function clearNotifAll() {
 }
 
 async function clearNotifItem(id) {
+  const ok = await confirmAction({
+    title: 'Hapus pemberitahuan ini?',
+    text: 'Pemberitahuan akan dihapus dari daftar Anda.',
+    confirmText: 'Ya, hapus',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api(`/notifications/${id}`, { method: 'DELETE' })
     await loadNotifications()
@@ -250,10 +284,14 @@ async function submitWithdrawal() {
       method: 'POST',
       body: JSON.stringify({ reason }),
     })
-    notice.value = res.message || 'Pengajuan cuti berhasil ditarik dan dibatalkan.'
     showWithdrawModal.value = false
     withdrawReasonInput.value = ''
     await loadViewData('detail')
+    notice.value = res.message || 'Pengajuan cuti berhasil ditarik dan dibatalkan.'
+    await successDialog({
+      title: 'Pengajuan ditarik',
+      text: res.message || 'Pengajuan cuti ditarik dan dibatalkan.',
+    })
   } catch (err) {
     pageError.value = errorText(err)
   } finally {
@@ -274,6 +312,13 @@ function backFromCancel() {
 async function runCancellation(payload) {
   const detail = requestDetail.value
   if (!detail) return
+  const ok = await confirmAction({
+    title: 'Batalkan pengajuan cuti ini?',
+    text: 'Pembatalan oleh Admin tercatat pada pengajuan dan reservasi saldo dilepas.',
+    confirmText: 'Ya, batalkan',
+    danger: true,
+  })
+  if (!ok) return
   submittingCancel.value = true
   pageError.value = ''
   try {
@@ -283,6 +328,10 @@ async function runCancellation(payload) {
     })
     notice.value = res.message || 'Cuti berhasil dibatalkan oleh Admin.'
     await openDetail(detail.id, cancelReturnView.value === 'queue' ? 'queue' : 'detail')
+    await successDialog({
+      title: 'Cuti dibatalkan',
+      text: res.message || 'Pengajuan cuti dibatalkan oleh Admin.',
+    })
   } catch (err) {
     pageError.value = errorText(err)
   } finally {
@@ -314,11 +363,11 @@ const queueStageCards = computed(() => {
     return {
       stageCode,
       label: ({
-        ADMIN_REVIEW: 'Verifikasi Admin',
-        PERTIMBANGAN_REVIEW: 'Pertimbangan SDM',
-        KASUBAG_REVIEW: 'Antrean Kasubag',
-        KEPSTA_REVIEW: 'Antrean Kepsta',
-        PPK_REVIEW: 'Antrean PPK',
+        ADMIN_REVIEW: 'Menunggu verifikasi',
+        PERTIMBANGAN_REVIEW: 'Menunggu pertimbangan SDM',
+        KASUBAG_REVIEW: 'Menunggu Kasubag',
+        KEPSTA_REVIEW: 'Menunggu Kepsta',
+        PPK_REVIEW: 'Menunggu PPK',
       })[stageCode],
       count: items.length,
       overdue: items.filter((item) => item.is_overdue).length,
@@ -345,29 +394,16 @@ const approvalRole = computed(() => {
   return ['HR_ANALYST', 'KASUBAG', 'KEPSTA', 'PPK'].find(code => codes.includes(code)) || ''
 })
 
-// Definisi menu sidebar mengikuti desain FigCraft (dengan ikon & badge)
-const staffNavItems = [
-  { view: 'queue', label: () => (isAdmin.value ? 'Antrean Verifikasi' : queueTitle()), icon: Inbox },
-  { view: 'directory', label: () => 'Pegawai & Cuti', icon: Users },
-  { view: 'admin-master', label: () => 'Kelola data', icon: ShieldCheck, adminOnly: true },
-  { view: 'calendar', label: () => 'Kalender Kerja', icon: CalendarDays },
-  { view: 'teams', label: () => 'Tim kerja', icon: UsersRound, adminOnly: true },
-  { view: 'reports', label: () => 'Laporan Cuti', icon: ChartColumn, adminOnly: true },
-  { view: 'audit', label: () => 'Audit Log', icon: ShieldCheck, adminOnly: true },
-  { view: 'verify', label: () => 'Verifikasi QR', icon: QrCode, adminOnly: true },
-]
-const employeeNavItems = [
-  { view: 'dashboard', label: () => 'Dashboard Cuti', icon: LayoutDashboard },
-  { view: 'request-form', label: () => 'Ajukan Cuti', icon: Plus },
-  { view: 'balance', label: () => 'Saldo & Rincian', icon: Wallet },
-  { view: 'history', label: () => 'Riwayat Pengajuan', icon: History },
-  { view: 'calendar', label: () => 'Kalender Kerja', icon: CalendarDays },
-]
-const navItems = computed(() => {
-  const items = employeeView.value ? employeeNavItems : staffNavItems
-  return items.filter(item => !item.adminOnly || isAdmin.value)
-    .map(item => ({ ...item, text: item.label() }))
-})
+// Sidebar desktop dan drawer mobile memakai daftar menu yang sama dari src/nav.js
+const settingsOpen = ref(false)
+const navItems = computed(() => navItemsFor({
+  employeeView: employeeView.value,
+  isAdmin: isAdmin.value,
+  queueLabel: isAdmin.value ? 'Antrean Verifikasi' : queueTitle(),
+  hasEmployee: Boolean(user.value?.employee),
+}))
+const mainNavItems = computed(() => navItems.value.filter(item => !item.group))
+const settingsNavItems = computed(() => navItems.value.filter(item => item.group === 'settings'))
 const navBadge = (viewName) => {
   if (viewName === 'queue') {
     const count = approvalRole.value ? Number(approvalCounts.pending || 0) : Number(dashboard.value?.waiting || 0)
@@ -408,6 +444,29 @@ const pageTitle = computed(() => {
   if (view.value === 'preview') return 'Pratinjau pengajuan'
   return ''
 })
+const pageSubtitle = computed(() => {
+  if (view.value === 'dashboard') return 'Ringkasan saldo dan pengajuan cuti Anda.'
+  if (view.value === 'request-form') return 'Tanggal selesai dihitung dari hari kerja dan kalender aktif.'
+  if (view.value === 'history') return 'Status dan jadwal seluruh pengajuan Anda.'
+  if (view.value === 'balance') return 'Kuota, terpakai, reservasi, dan rincian transaksi saldo.'
+  if (view.value === 'queue') {
+    if (approvalRole.value) return 'Pengajuan yang menunggu tinjauan dan keputusan Anda.'
+    if (isAdmin.value) {
+      return `${dashboard.value?.waiting || 0} pengajuan menunggu pemeriksaan · ${dashboard.value?.overdue || 0} melewati SLA`
+    }
+    return 'Pengajuan yang berada dalam lingkup tugas Anda.'
+  }
+  if (view.value === 'directory') return 'Saldo cuti tahunan, pemakaian, dan cuti aktif atau berikutnya.'
+  if (view.value === 'verify') return 'Periksa token QR pada dokumen final untuk melihat status dan penandatangan.'
+  if (view.value === 'calendar') return 'Hari libur dan tanggal larangan cuti yang memengaruhi perhitungan.'
+  if (view.value === 'profile') return 'Kelola foto profil dan tanda tangan digital Anda.'
+  if (view.value === 'reports') return 'Rekap periode, unit, dan pembatalan · Tahun 2026'
+  if (view.value === 'audit') return 'Jejak tindakan administratif. Catatan audit bersifat tetap.'
+  return 'Ringkasan, tahapan, dan tindakan sesuai kewenangan.'
+})
+const canRetryLoad = computed(() =>
+  ['dashboard', 'queue', 'directory', 'history', 'detail', 'request-form'].includes(view.value),
+)
 
 function roleLabelFor(code) {
   return ({
@@ -447,6 +506,13 @@ function formatDate(value, options = {}) {
   }).format(date)
 }
 
+function formatNotifDate(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.valueOf())) return '—'
+  return new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }).format(date)
+}
+
 function formatDateTime(value) {
   if (!value) return '—'
   return new Intl.DateTimeFormat('id-ID', {
@@ -455,42 +521,6 @@ function formatDateTime(value) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
-}
-
-function statusLabel(status) {
-  return ({
-    DRAFT: 'Draf',
-    SUBMITTED: 'Menunggu verifikasi',
-    ADMIN_REVIEW: 'Menunggu verifikasi',
-    ADMIN_VERIFIED: 'Terverifikasi',
-    PERTIMBANGAN_REVIEW: 'Pertimbangan SDM',
-    KASUBAG_REVIEW: 'Antrean Kasubag',
-    KEPSTA_REVIEW: 'Antrean Kepsta',
-    PPK_REVIEW: 'Antrean PPK',
-    RETURNED_FOR_REVISION: 'Dikembalikan',
-    APPROVED: 'Disetujui',
-    REJECTED: 'Ditolak',
-    WITHDRAWN: 'Dibatalkan pegawai',
-    CANCELLED: 'Dibatalkan Admin',
-  })[status] || status || '—'
-}
-
-function statusTone(status) {
-  if (['APPROVED', 'COMPLETED'].includes(status)) return 'success'
-  if (['RETURNED_FOR_REVISION', 'REJECTED', 'CANCELLED', 'WITHDRAWN'].includes(status)) return 'danger'
-  if (['SUBMITTED', 'ADMIN_REVIEW', 'PERTIMBANGAN_REVIEW', 'KASUBAG_REVIEW', 'KEPSTA_REVIEW', 'PPK_REVIEW'].includes(status)) {
-    return 'warning'
-  }
-  if (['ADMIN_VERIFIED'].includes(status)) return 'info'
-  return 'neutral'
-}
-
-function leaveStatusLabel(status) {
-  return ({
-    ON_LEAVE: 'Sedang cuti',
-    UPCOMING: 'Cuti berikutnya',
-    NONE: 'Tidak cuti',
-  })[status] || '—'
 }
 
 function categoryLabel(code) {
@@ -546,16 +576,11 @@ function historyQueryString(includePagination = true) {
     if (historyFilters[key]) params.set(name, String(historyFilters[key]))
   }
   if (includePagination) {
-    params.set('limit', '8')
-    params.set('offset', String(historyPage.value * 8))
+    params.set('limit', String(historyPageSize))
+    params.set('offset', String(historyPage.value * historyPageSize))
   }
   return params.toString()
 }
-
-const historyExportHref = computed(() => {
-  const qs = historyQueryString(false)
-  return `/api/requests/export.csv${qs ? `?${qs}` : ''}`
-})
 
 async function loadHistory() {
   const result = await api(`/requests?${historyQueryString()}`)
@@ -563,14 +588,6 @@ async function loadHistory() {
   historyTotal.value = Number(result.total ?? result.summary?.total ?? 0)
   Object.assign(historyCounts, result.summary || {})
   historyYears.value = result.years || []
-}
-
-function exportHistoryCsv() {
-  const link = document.createElement('a')
-  link.href = historyExportHref.value
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
 }
 
 function changeBalanceYear(year) {
@@ -612,6 +629,7 @@ function mapApprovalItem(item) {
     end_date: item.endDate,
     requested_working_days: item.requestedWorkingDays,
     submitted_at: item.submittedAt,
+    completed_at: item.completedAt,
     leave_type_name: item.leaveTypeName,
     status: item.status,
   }
@@ -691,14 +709,21 @@ async function loadViewData(target = view.value) {
   }
 }
 
-async function openPage(target) {
+async function openPage(target, item = null) {
   view.value = target
+  if (target === 'history') {
+    historyFilters.status = item?.cancellationOnly ? 'CANCELLED' : ''
+  }
   preview.value = null
   formError.value = ''
   notice.value = ''
   if (target !== 'profile') loadAvatar()
   if (target !== 'queue') globalFilter.value = ''
   await loadViewData(target)
+}
+
+function onDrawerNavigate(item) {
+  openPage(item.view, item)
 }
 
 async function openDetail(id, from) {
@@ -824,6 +849,19 @@ async function submitRequest(mode = 'submit') {
     formError.value = `Lampirkan minimal ${selectedLeaveType.value.attachment_min_count} file untuk jenis cuti ini.`
     return
   }
+  const ok = await confirmAction(mode === 'draft'
+    ? {
+        title: 'Simpan sebagai draf?',
+        text: 'Draf dapat dilanjutkan kapan saja dari Riwayat pengajuan.',
+        confirmText: 'Ya, simpan draf',
+        icon: 'info',
+      }
+    : {
+        title: 'Kirim pengajuan cuti ini?',
+        text: 'Pengajuan masuk ke antrean Admin untuk verifikasi.',
+        confirmText: 'Ya, kirim',
+      })
+  if (!ok) return
   loading.value = true
   formError.value = ''
   try {
@@ -842,16 +880,18 @@ async function submitRequest(mode = 'submit') {
       for (const file of selectedFiles.value) body.append('attachments', file)
       result = await api('/requests', { method: 'POST', body })
     }
-    if (mode === 'draft') {
-      notice.value = 'Draf berhasil disimpan. Anda dapat melanjutkannya dari Riwayat pengajuan.'
-    } else {
-      notice.value = 'Pengajuan berhasil dikirim ke antrean Admin.'
-    }
     editingDraftId.value = null
     selectedFiles.value = []
     existingAttachments.value = []
-    if (mode === 'draft') await openPage('history')
-    else await openDetail(result.request.id, 'history')
+    if (mode === 'draft') {
+      notice.value = 'Draf berhasil disimpan. Anda dapat melanjutkannya dari Riwayat pengajuan.'
+      await openPage('history')
+      await successDialog({ title: 'Draf tersimpan', text: 'Draf dapat dilanjutkan dari Riwayat pengajuan.' })
+    } else {
+      notice.value = 'Pengajuan berhasil dikirim ke antrean Admin.'
+      await openDetail(result.request.id, 'history')
+      await successDialog({ title: 'Pengajuan terkirim', text: 'Pengajuan masuk ke antrean Admin untuk verifikasi.' })
+    }
   } catch (error) {
     formError.value = errorText(error)
   } finally {
@@ -860,12 +900,19 @@ async function submitRequest(mode = 'submit') {
 }
 
 async function submitDraft(id) {
+  const ok = await confirmAction({
+    title: 'Kirim pengajuan ini?',
+    text: 'Pengajuan dikirim ke antrean Admin untuk diverifikasi.',
+    confirmText: 'Ya, kirim',
+  })
+  if (!ok) return
   loading.value = true
   pageError.value = ''
   try {
     await api(`/requests/${id}/submit`, { method: 'POST' })
-    notice.value = 'Draf berhasil dikirim ke antrean Admin.'
+    notice.value = 'Pengajuan berhasil dikirim ke antrean Admin.'
     await openDetail(id, 'history')
+    await successDialog({ title: 'Pengajuan terkirim', text: 'Pengajuan masuk ke antrean Admin untuk verifikasi.' })
   } catch (error) {
     pageError.value = errorText(error)
   } finally {
@@ -947,12 +994,21 @@ async function continueDraft(draft) {
   } catch (_) {
     existingAttachments.value = []
   }
-  notice.value = 'Draf dimuat. Perbarui data lalu simpan atau kirim.'
+  notice.value = draft.status === 'RETURNED_FOR_REVISION'
+    ? 'Perbaiki data pengajuan, lalu kirim ulang ke antrean Admin.'
+    : 'Draf dimuat. Perbarui data lalu simpan atau kirim.'
   await openPage('request-form')
 }
 
 async function removeExistingAttachment(id) {
   if (!editingDraftId.value) return
+  const ok = await confirmAction({
+    title: 'Hapus lampiran ini?',
+    text: 'Lampiran dihapus dari draf. Perubahan tersimpan saat draf disimpan.',
+    confirmText: 'Ya, hapus',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api(`/attachments/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ reason: 'Dihapus pemilik saat menyunting draf.' }) })
     existingAttachments.value = existingAttachments.value.filter(a => String(a.id) !== String(id))
@@ -975,7 +1031,7 @@ function startSignatureDraw(event) {
   const canvas = event.currentTarget
   const point = signaturePoint(event, canvas)
   const ctx = canvas.getContext('2d')
-  ctx.strokeStyle = '#111827'
+  ctx.strokeStyle = '#142f3a'
   ctx.lineWidth = 2
   ctx.lineCap = 'round'
   ctx.beginPath()
@@ -1024,6 +1080,12 @@ async function uploadSignature() {
     pageError.value = 'Pilih file tanda tangan PNG atau JPG.'
     return
   }
+  const ok = await confirmAction({
+    title: 'Simpan tanda tangan ini?',
+    text: 'Tanda tangan dipakai pada dokumen keputusan cuti Anda.',
+    confirmText: 'Ya, simpan',
+  })
+  if (!ok) return
   signing.value = true
   pageError.value = ''
   try {
@@ -1035,6 +1097,7 @@ async function uploadSignature() {
     signatureFile.value = null
     hasDrawnSignature.value = false
     await loadViewData('detail')
+    await successDialog({ title: 'Tanda tangan tersimpan', text: 'Tanda tangan dipakai pada dokumen keputusan cuti Anda.' })
   } catch (error) {
     pageError.value = errorText(error)
   } finally {
@@ -1054,10 +1117,35 @@ async function performAction(kind) {
     pageError.value = 'Catatan penolakan wajib diisi, minimal 10 karakter.'
     return
   }
-  if (kind === 'return' && !window.confirm('Kembalikan pengajuan ini untuk diperbaiki?')) return
+  if (kind === 'return') {
+    const ok = await confirmAction({
+      title: 'Kembalikan pengajuan ini?',
+      text: 'Pengajuan dikembalikan ke pegawai untuk diperbaiki. Reservasi saldo dilepas.',
+      confirmText: 'Ya, kembalikan',
+      danger: true,
+    })
+    if (!ok) return
+  }
   if (kind === 'decision' && detail.activeStage?.decision_mode === 'FINAL') {
     const outcome = decision.value === 'APPROVED' ? 'setujui' : 'tolak'
-    if (!window.confirm(`Konfirmasi keputusan untuk ${outcome} pengajuan ini?`)) return
+    const ok = await confirmAction({
+      title: outcome === 'setujui' ? 'Setujui pengajuan ini?' : 'Tolak pengajuan ini?',
+      text: outcome === 'setujui'
+        ? 'Keputusan SETUJUI tercatat dan surat final dapat dibuat.'
+        : 'Keputusan TIDAK DISETUJUI tercatat pada pengajuan.',
+      confirmText: outcome === 'setujui' ? 'Ya, setujui' : 'Ya, tolak',
+      icon: outcome === 'setujui' ? 'question' : 'warning',
+      danger: outcome !== 'setujui',
+    })
+    if (!ok) return
+  }
+  if (kind === 'verify') {
+    const ok = await confirmAction({
+      title: 'Verifikasi & teruskan ke Analis SDM?',
+      text: 'Pengajuan diteruskan ke tahap pertimbangan SDM setelah checklist diperiksa.',
+      confirmText: 'Ya, verifikasi',
+    })
+    if (!ok) return
   }
   const action = kind === 'verify'
     ? { action: 'VERIFY' }
@@ -1086,6 +1174,24 @@ async function performAction(kind) {
     actionNotes.value = ''
     await loadViewData('detail')
     if (returnView.value === 'queue') await loadViewData('queue')
+    const feedback = {
+      VERIFY: { title: 'Verifikasi selesai', text: 'Pengajuan diverifikasi dan diteruskan ke Analis SDM.' },
+      PERTIMBANGAN: { title: 'Pertimbangan terkirim', text: 'Catatan pertimbangan dikirim, pengajuan diteruskan ke Kasubag.' },
+      FORWARD: { title: 'Diteruskan ke Kepsta', text: 'Pengajuan diteruskan untuk keputusan akhir.' },
+      RETURN: { title: 'Pengajuan dikembalikan', text: 'Pengajuan dikembalikan ke pegawai untuk diperbaiki.' },
+    }[action.action]
+    || (action.action === 'DECIDE'
+      ? (decision.value === 'APPROVED'
+        ? { title: 'Pengajuan disetujui', text: 'Keputusan setujui tercatat, surat final dapat diunduh di detail pengajuan.' }
+        : { title: 'Keputusan tercatat', text: 'Pengajuan dinyatakan tidak disetujui.' })
+      : null)
+    if (feedback) {
+      await successDialog({
+        ...feedback,
+        icon: action.action === 'DECIDE' && decision.value !== 'APPROVED' ? 'error' : 'success',
+        timer: 2200,
+      })
+    }
   } catch (error) {
     pageError.value = errorText(error)
   } finally {
@@ -1146,6 +1252,12 @@ onMounted(() => {
   document.addEventListener('mousedown', (event) => {
     if (!event.target.closest?.('.account-menu, .account-chevron')) accountMenuOpen.value = false
   })
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      notifPanel.value = false
+      accountMenuOpen.value = false
+    }
+  })
 })
 </script>
 
@@ -1157,7 +1269,6 @@ onMounted(() => {
         <span><strong>TU DIGITAL</strong><small>Modul pengelolaan cuti</small></span>
       </div>
       <div class="login-message">
-        <p class="eyebrow">MODUL CUTI</p>
         <h1>Pengajuan cuti dalam satu alur yang jelas.</h1>
         <p>Ajukan cuti, pantau saldo, dan lihat posisi pengajuan tanpa berpindah proses.</p>
       </div>
@@ -1221,23 +1332,19 @@ onMounted(() => {
   </main>
 
   <div v-else class="app-shell">
-    <header class="topbar">
-      <div class="brand-lockup">
-        <span class="brand-mark">TU</span>
-        <span class="brand-copy"><strong>TU DIGITAL</strong><small>{{ roleLabel }}</small></span>
-      </div>
-      <span class="topbar-divider" aria-hidden="true"></span>
-      <form class="topbar-search" role="search" @submit.prevent="submitGlobalSearch">
-        <Search :size="15" aria-hidden="true" />
-        <input v-model="globalSearch" type="search" placeholder="Cari pengajuan, nama pegawai, atau nomor cuti…" aria-label="Cari pengajuan, nama pegawai, atau nomor cuti" />
-      </form>
-      <div class="topbar-right">
+    <AppTopBar
+      :role-label="roleLabel"
+      v-model:search="globalSearch"
+      @menu="drawerOpen = true"
+      @submit-search="submitGlobalSearch"
+    >
+      <template #right>
         <div class="notification-center">
-          <button class="notif-bell-btn" type="button" @click="notifPanel = !notifPanel; if(notifPanel) loadNotifications()" aria-label="Pemberitahuan">
+          <button class="notif-bell-btn" type="button" :aria-expanded="notifPanel" aria-controls="notif-panel" aria-label="Pemberitahuan" @click="notifPanel = !notifPanel; if(notifPanel) loadNotifications()">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
             <span v-if="notifUnread > 0" class="notif-badge">{{ notifUnread > 9 ? '9+' : notifUnread }}</span>
           </button>
-          <div v-if="notifPanel" class="notif-dropdown" @click.stop>
+          <div v-if="notifPanel" id="notif-panel" class="notif-dropdown" role="region" aria-label="Pemberitahuan" @click.stop>
             <div class="notif-dropdown-header">
               <strong>Pemberitahuan</strong>
               <span v-if="notifUnread > 0" class="muted">{{ notifUnread }} belum dibaca</span>
@@ -1245,22 +1352,29 @@ onMounted(() => {
             <div class="notif-dropdown-actions">
               <button class="text-button" type="button" @click="markAllNotifRead" :disabled="notifUnread === 0">Semua dibaca</button>
               <button class="text-button" type="button" @click="clearNotifAll" :disabled="notifications.length === 0">Bersihkan semua</button>
-              <button class="text-button notif-close" type="button" @click="notifPanel = false" aria-label="Tutup">×</button>
+              <button class="text-button notif-close" type="button" @click="notifPanel = false" aria-label="Tutup"><X :size="16" aria-hidden="true" /></button>
             </div>
-            <div v-if="notifications.length === 0" class="notif-empty">
-              <p>Tidak ada pemberitahuan.</p>
+            <div v-if="notifLoading && notifications.length === 0" class="notif-state">Memuat pemberitahuan…</div>
+            <div v-else-if="notifError" class="notif-state notif-state-error" role="alert">
+              <p>{{ notifError }}</p>
+              <button class="text-button" type="button" @click="loadNotifications()">Coba lagi</button>
+            </div>
+            <div v-else-if="notifications.length === 0" class="notif-empty">
+              <p>Belum ada pemberitahuan. Notifikasi pengajuan cuti akan muncul di sini.</p>
             </div>
             <ul v-else class="notif-dropdown-list">
               <li v-for="n in notifications" :key="n.id" :class="{ unread: !n.is_read }" class="notif-item">
                 <span class="notif-severity-dot" :class="{'tone-action': n.severity==='ACTION', 'tone-success': n.severity==='SUCCESS', 'tone-warning': n.severity==='WARNING', 'tone-danger': n.severity==='DANGER', 'tone-info': n.severity==='INFO'}"></span>
-                <div class="notif-item-content" @click="handleNotifClick(n)" role="button" tabindex="0" @keydown.enter="handleNotifClick(n)">
-                  <div class="notif-item-top">
-                    <p class="notif-title">{{ n.title }}</p>
-                    <small class="notif-time">{{ formatDate(n.created_at) }}</small>
-                  </div>
-                  <p class="notif-body-text">{{ n.body }}</p>
+                <div class="notif-item-content">
+                  <button class="notif-item-open" type="button" @click="handleNotifClick(n)">
+                    <span class="notif-item-top">
+                      <span class="notif-title">{{ n.title }}</span>
+                      <small class="notif-time">{{ formatNotifDate(n.created_at) }}</small>
+                    </span>
+                    <span class="notif-body-text">{{ n.body }}</span>
+                  </button>
                   <div class="notif-item-actions">
-                    <button v-if="n.leave_request_id" class="text-button" type="button" @click.stop="handleNotifClick(n)">Buka detail</button>
+                    <span v-if="!n.is_read" class="notif-unread-tag">Baru</span>
                     <button class="text-button notif-delete" type="button" @click.stop="clearNotifItem(n.id)">Hapus</button>
                   </div>
                 </div>
@@ -1281,8 +1395,8 @@ onMounted(() => {
           <button type="button" @click="accountMenuOpen = false; openPage('profile')"><UserRound :size="14" aria-hidden="true" /> Profil saya</button>
           <button type="button" @click="signOut"><LogOut :size="14" aria-hidden="true" /> Keluar</button>
         </div>
-      </div>
-    </header>
+      </template>
+    </AppTopBar>
 
     <aside class="sidebar" aria-label="Navigasi modul cuti">
       <p class="menu-label">MODUL CUTI</p>
@@ -1295,16 +1409,41 @@ onMounted(() => {
       </div>
       <nav class="side-nav">
         <button
-          v-for="item in navItems"
+          v-for="item in mainNavItems"
           :key="item.view"
-          :class="{ active: view === item.view }"
+          :class="{ active: view === item.view && !item.cancellationOnly }"
           type="button"
-          @click="openPage(item.view)"
+          @click="openPage(item.view, item)"
         >
           <component :is="item.icon" :size="15" aria-hidden="true" />
           <span>{{ item.text }}</span>
           <small v-if="navBadge(item.view)" class="nav-count">{{ navBadge(item.view) }}</small>
         </button>
+
+        <div v-if="settingsNavItems.length" class="side-nav-group">
+          <button
+            class="side-nav-toggle"
+            type="button"
+            :aria-expanded="settingsOpen"
+            @click="settingsOpen = !settingsOpen"
+          >
+            <Settings2 :size="15" aria-hidden="true" />
+            <span>Pengaturan</span>
+            <ChevronDown :size="13" :class="{ rotated: settingsOpen }" aria-hidden="true" />
+          </button>
+          <div v-if="settingsOpen" class="side-nav-sub">
+            <button
+              v-for="item in settingsNavItems"
+              :key="item.view"
+              :class="{ active: view === item.view }"
+              type="button"
+              @click="openPage(item.view, item)"
+            >
+              <component :is="item.icon" :size="14" aria-hidden="true" />
+              <span>{{ item.text }}</span>
+            </button>
+          </div>
+        </div>
       </nav>
       <div class="sidebar-bottom">
         <span class="sidebar-divider" aria-hidden="true"></span>
@@ -1321,71 +1460,37 @@ onMounted(() => {
       </div>
     </aside>
 
-    <nav class="mobile-nav" :class="{ 'mobile-nav-admin': !employeeView }" aria-label="Navigasi utama">
-      <button
-        v-for="item in navItems"
-        :key="item.view"
-        :class="{ active: view === item.view }"
-        type="button"
-        @click="openPage(item.view)"
-      >
-        <component :is="item.icon" :size="15" aria-hidden="true" />
-        <span>{{ item.text }}</span>
-      </button>
-      <button :class="{ active: view === 'profile' }" type="button" @click="openPage('profile')">
-        <UserRound :size="15" aria-hidden="true" />
-        <span>Profil</span>
-      </button>
-    </nav>
+    <MobileNavDrawer
+      :open="drawerOpen"
+      :items="navItems"
+      :active="view"
+      :role-label="roleLabel"
+      :user-initial="user?.fullName?.slice(0, 1) || 'U'"
+      :year="dashboard?.balance?.period_year || new Date().getFullYear()"
+      :badge-for="navBadge"
+      :search="globalSearch"
+      @update:search="globalSearch = $event"
+      @submit-search="submitGlobalSearch(); drawerOpen = false"
+      @close="drawerOpen = false"
+      @navigate="onDrawerNavigate"
+      @profile="openPage('profile')"
+      @guide="guideOpen = true"
+      @signout="signOut"
+    />
 
     <main class="main-content" :class="{ 'main-reports': view === 'reports' }">
-      <header v-if="!(view === 'detail' && (isAdmin || employeeView)) && view !== 'cancel' && view !== 'preview'" class="page-header">
-        <div>
-          <p v-if="view !== 'reports'" class="eyebrow">TU DIGITAL / MODUL CUTI</p>
-          <h1>{{ pageTitle }}</h1>
-          <p class="page-subtitle">
-            <template v-if="view === 'dashboard'">Ringkasan saldo dan pengajuan cuti Anda.</template>
-            <template v-else-if="view === 'request-form'">Tanggal selesai dihitung dari hari kerja dan kalender aktif.</template>
-            <template v-else-if="view === 'history'">Status dan jadwal seluruh pengajuan Anda.</template>
-            <template v-else-if="view === 'balance'">Kuota, terpakai, reservasi, dan rincian transaksi saldo.</template>
-            <template v-else-if="view === 'queue'">
-              {{ approvalRole ? 'Pengajuan yang menunggu tinjauan dan keputusan Anda.' : isAdmin ? `${dashboard?.waiting || 0} pengajuan menunggu pemeriksaan · ${dashboard?.overdue || 0} melewati SLA` : 'Pengajuan yang berada dalam lingkup tugas Anda.' }}
-            </template>
-            <template v-else-if="view === 'directory'">Saldo cuti tahunan, pemakaian, dan cuti aktif atau berikutnya.</template>
-            <template v-else-if="view === 'verify'">Periksa token QR pada dokumen final untuk melihat status dan penandatangan.</template>
-            <template v-else-if="view === 'calendar'">Hari libur dan tanggal larangan cuti yang memengaruhi perhitungan.</template>
-            <template v-else-if="view === 'profile'">Kelola foto profil dan tanda tangan digital Anda.</template>
-            <template v-else-if="view === 'reports'">Rekap periode, unit, dan pembatalan · Tahun 2026</template>
-            <template v-else-if="view === 'audit'">Jejak tindakan administratif. Catatan audit bersifat tetap.</template>
-            <template v-else>Ringkasan, tahapan, dan tindakan sesuai kewenangan.</template>
-          </p>
-        </div>
-        <div class="header-actions">
+      <PageHeader
+        v-if="!(view === 'detail' && (isAdmin || approvalRole || employeeView)) && view !== 'cancel' && view !== 'preview'"
+        :eyebrow="view === 'reports' ? '' : 'TU DIGITAL / MODUL CUTI'"
+        :title="pageTitle"
+        :subtitle="pageSubtitle"
+      >
+        <template #actions>
           <template v-if="view === 'dashboard'">
             <button class="button button-primary" type="button" @click="startNewRequest">
               <Plus :size="15" aria-hidden="true" /> Ajukan cuti
             </button>
           </template>
-          <button v-if="view === 'queue' && isAdmin" class="button button-secondary" type="button" @click="queueRef?.exportCsv()">
-            <Download :size="15" aria-hidden="true" /> Ekspor
-          </button>
-          <button v-if="view === 'queue' && approvalRole" class="button button-secondary" type="button" @click="approvalRef?.exportCsv()">
-            <Download :size="15" aria-hidden="true" /> Ekspor
-          </button>
-          <button v-if="view === 'directory'" class="button button-secondary" type="button" @click="directoryRef?.exportCsv()">
-            <Download :size="15" aria-hidden="true" /> Ekspor
-          </button>
-          <template v-if="view === 'reports'">
-            <button class="button button-secondary" type="button" @click="reportsRef?.downloadPdf()">
-              <Download :size="15" aria-hidden="true" /> Unduh PDF
-            </button>
-            <button class="button button-primary" type="button" @click="reportsRef?.openExport()">
-              <Download :size="15" aria-hidden="true" /> Ekspor XLS
-            </button>
-          </template>
-          <button v-if="view === 'audit'" class="button button-secondary" type="button" @click="auditRef?.exportCsv()">
-            <Download :size="15" aria-hidden="true" /> Ekspor
-          </button>
           <template v-if="view === 'calendar' && canManageCalendar">
             <button class="button button-secondary" type="button" @click="calendarRef?.openImport()">
               <Upload :size="15" aria-hidden="true" /> Impor kalender
@@ -1394,16 +1499,23 @@ onMounted(() => {
               <Plus :size="15" aria-hidden="true" /> Tambah tanggal
             </button>
           </template>
-          <button v-if="view === 'detail' && !isAdmin" class="button button-secondary" type="button" @click="backFromDetail">Kembali</button>
-        </div>
-      </header>
+        </template>
+      </PageHeader>
 
       <p v-if="notice" class="alert alert-success" role="status">{{ notice }}</p>
-      <p v-if="pageError" class="alert alert-danger" role="alert">
-        {{ pageError }}
-        <button v-if="['dashboard', 'queue', 'directory', 'history', 'detail', 'request-form'].includes(view)" class="text-button" type="button" @click="loadViewData()">Coba lagi</button>
-      </p>
-      <p v-if="loading && view !== 'login'" class="state-message" role="status">Memuat {{ pageTitle.toLocaleLowerCase('id') }}…</p>
+      <StateView
+        v-if="pageError"
+        state="error"
+        title="Data belum bisa dimuat"
+        :description="pageError"
+        :action-label="canRetryLoad ? 'Coba lagi' : ''"
+        @action="loadViewData()"
+      />
+      <StateView
+        v-else-if="loading && view !== 'login'"
+        state="loading"
+        :title="`Memuat ${pageTitle.toLocaleLowerCase('id')}…`"
+      />
 
       <template v-if="!loading && !pageError">
         <ProfilePage v-if="view === 'profile'" @back="openPage(employeeView ? 'dashboard' : 'queue')" />
@@ -1445,6 +1557,7 @@ onMounted(() => {
           :items="history"
           :total="historyTotal"
           :page="historyPage"
+          :page-size="historyPageSize"
           :years="historyYears"
           :leave-types="leaveTypes"
           :filters="historyFilters"
@@ -1454,22 +1567,18 @@ onMounted(() => {
           @reset="resetHistoryFilters"
           @page="historyPage = $event; loadHistory()"
           @open="openDetail($event, 'history')"
-          @export="exportHistoryCsv"
         />
 
         <AdminQueue
           v-if="view === 'queue' && isAdmin"
-          ref="queueRef"
           :items="displayedApprovalItems"
           :status-counts="approvalCounts"
           :active-status="approvalStatus"
-          @status-change="changeApprovalStatus"
           @open="openDetail($event, 'queue')"
         />
 
         <ApprovalQueue
           v-else-if="view === 'queue' && approvalRole"
-          ref="approvalRef"
           :role-code="approvalRole"
           :items="displayedApprovalItems"
           :status-counts="approvalCounts"
@@ -1508,9 +1617,9 @@ onMounted(() => {
                     <td>{{ item.employee_name }}</td>
                     <td>{{ item.employee_unit_name || '—' }}</td>
                     <td>{{ item.leave_type_name }}</td>
-                    <td>{{ formatDate(item.start_date) }} – {{ formatDate(item.end_date) }}</td>
+                    <td>{{ formatDateRange(item.start_date, item.end_date) }}</td>
                     <td>{{ formatNumber(item.requested_working_days) }} hari</td>
-                    <td><span class="status-badge" :class="`tone-${item.is_overdue ? 'danger' : 'warning'}`">{{ item.is_overdue ? 'Lewat SLA' : statusLabel(item.request_status) }}</span></td>
+                    <td><StatusPill :status="item.is_overdue ? 'OVERDUE' : item.request_status" /></td>
                     <td><button class="button button-small button-secondary" type="button" @click="openDetail(item.id, 'queue')">Buka</button></td>
                   </tr>
                 </tbody>
@@ -1518,11 +1627,11 @@ onMounted(() => {
             </div>
             <div v-if="filteredQueue.length" class="queue-cards">
               <article v-for="item in filteredQueue" :key="item.stage_id" class="record-card">
-                <div><button class="row-link" type="button" @click="openDetail(item.id, 'queue')">{{ item.request_number }}</button><span class="status-badge" :class="`tone-${item.is_overdue ? 'danger' : 'warning'}`">{{ item.is_overdue ? 'Lewat SLA' : statusLabel(item.request_status) }}</span></div>
+                <div><button class="row-link" type="button" @click="openDetail(item.id, 'queue')">{{ item.request_number }}</button><StatusPill :status="item.is_overdue ? 'OVERDUE' : item.request_status" /></div>
                 <p><strong>{{ item.employee_name }}</strong> · {{ item.employee_unit_name || 'Unit tidak tersedia' }}</p>
                 <small>{{ item.leave_type_name }} · {{ formatNumber(item.requested_working_days) }} hari</small>
-                <small>{{ formatDate(item.start_date) }} – {{ formatDate(item.end_date) }}</small>
-                <button class="button button-secondary button-small" type="button" @click="openDetail(item.id, 'queue')">Buka pengajuan</button>
+                <small>{{ formatDateRange(item.start_date, item.end_date) }}</small>
+                <button class="button button-secondary button-small" type="button" @click="openDetail(item.id, 'queue')">Buka</button>
               </article>
             </div>
             <p v-else class="empty-state">
@@ -1582,6 +1691,10 @@ onMounted(() => {
           v-if="view === 'detail' && employeeView && requestDetail"
           :request="requestDetail"
           @back="backFromDetail"
+          @edit="continueDraft(requestDetail)"
+          @preview="openDocumentPreview(requestDetail.id)"
+          @submit="submitDraft(requestDetail.id)"
+          @withdraw="showWithdrawModal = true"
         />
 
         <AdminVerificationDetail
@@ -1630,18 +1743,30 @@ onMounted(() => {
             </div>
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <template v-if="requestDetail.status === 'APPROVED'">
-                <a class="button button-secondary button-small" :href="`/api/requests/${requestDetail.id}/preview-document`" target="_blank" rel="noopener">Pratinjau formulir</a>
+                <a class="button button-secondary button-small" :href="`/api/requests/${requestDetail.id}/preview-document`" target="_blank" rel="noopener">Pratinjau PDF</a>
                 <button class="button button-primary button-small" type="button" :disabled="downloadingFinal" @click="downloadFinalPdf(requestDetail)">
                   <Download :size="14" aria-hidden="true" /> {{ downloadingFinal ? 'Mengunduh…' : 'Unduh PDF final' }}
                 </button>
               </template>
               <template v-else-if="canViewPreview(requestDetail)">
-                <a class="button button-secondary button-small" :href="`/api/requests/${requestDetail.id}/preview-document`" target="_blank" rel="noopener">Pratinjau formulir</a>
+                <a class="button button-secondary button-small" :href="`/api/requests/${requestDetail.id}/preview-document`" target="_blank" rel="noopener">Pratinjau PDF</a>
+                <button
+                  v-if="requestDetail.status === 'CANCELLED' || requestDetail.status === 'WITHDRAWN'"
+                  class="button button-secondary button-small"
+                  type="button"
+                  @click="openDocumentPreview(requestDetail.id)"
+                >
+                  Lihat pratinjau
+                </button>
               </template>
               <template v-if="requestDetail.canEditDraft">
-                <button class="button button-secondary button-small" type="button" @click="continueDraft(requestDetail)">Lanjutkan draf</button>
+                <button class="button button-secondary button-small" type="button" @click="continueDraft(requestDetail)">
+                  {{ requestDetail.status === 'RETURNED_FOR_REVISION' ? 'Perbaiki pengajuan' : 'Lanjutkan draf' }}
+                </button>
                 <button class="button button-secondary button-small" type="button" @click="openDocumentPreview(requestDetail.id)">Pratinjau &amp; tanda tangan</button>
-                <button class="button button-primary button-small" type="button" :disabled="loading" @click="submitDraft(requestDetail.id)">Kirim draf</button>
+                <button class="button button-primary button-small" type="button" :disabled="loading" @click="submitDraft(requestDetail.id)">
+                  {{ requestDetail.status === 'RETURNED_FOR_REVISION' ? 'Kirim ulang pengajuan' : 'Kirim draf' }}
+                </button>
               </template>
               <button
                 v-if="requestDetail.canWithdraw"
@@ -1659,7 +1784,7 @@ onMounted(() => {
               >
                 {{ requestDetail.status === 'APPROVED' ? 'Batalkan cuti' : 'Batalkan pengajuan' }}
               </button>
-              <span class="status-badge" :class="`tone-${statusTone(requestDetail.status)}`">{{ statusLabel(requestDetail.status) }}</span>
+              <StatusPill :status="requestDetail.status" />
             </div>
           </section>
 
@@ -1671,7 +1796,7 @@ onMounted(() => {
                 Alasan: {{ requestDetail.cancellation?.reason || 'Pengajuan ditarik sebelum verifikasi Admin.' }}
                 <span v-if="requestDetail.cancellation?.cancelled_at"> · {{ formatDateTime(requestDetail.cancellation.cancelled_at) }}</span>
               </p>
-              <small class="muted">Reservasi saldo cuti tahunan telah dilepas kembali ke saldo Anda.</small>
+              <small class="muted">{{ (requestDetail.cancellation?.balance_before ?? requestDetail.cancellation?.balance_after) !== null && Number(requestDetail.cancellation?.balance_after) === Number(requestDetail.cancellation?.balance_before) ? 'Tidak ada reservasi yang dilepas (saldo tidak berubah).' : 'Reservasi saldo cuti tahunan telah dilepas kembali ke saldo Anda.' }}</small>
             </div>
           </section>
 
@@ -1683,7 +1808,7 @@ onMounted(() => {
                 Alasan: {{ requestDetail.cancellation?.reason || '-' }}
                 <span v-if="requestDetail.cancellation?.cancelled_at"> · {{ formatDateTime(requestDetail.cancellation.cancelled_at) }}</span>
               </p>
-              <small v-if="requestDetail.cancellation?.restored_days > 0" style="font-weight: 600; color: #166534;">
+              <small v-if="requestDetail.cancellation?.restored_days > 0" style="font-weight: 600; color: var(--success-text);">
                 ✓ {{ requestDetail.cancellation.restored_days }} hari kerja telah dipulihkan ke saldo cuti tahunan pegawai.
               </small>
               <small v-else class="muted">Pengajuan dibatalkan tanpa pemulihan saldo (cuti belum dijalani atau tidak ada sisa hari).</small>
@@ -1835,7 +1960,7 @@ onMounted(() => {
           <div class="modal-card">
             <div class="modal-header">
               <h3>Batalkan Pengajuan Cuti</h3>
-              <button class="button button-secondary button-small" type="button" @click="showWithdrawModal = false">✕</button>
+              <button class="button button-secondary button-small" type="button" @click="showWithdrawModal = false" aria-label="Tutup"><X :size="14" aria-hidden="true" /></button>
             </div>
             <div class="modal-body">
               <div class="alert alert-neutral">
@@ -1880,7 +2005,7 @@ onMounted(() => {
       <div class="modal-card guide-modal" role="dialog" aria-label="Panduan cuti">
         <div class="modal-header">
           <h3>Panduan cuti</h3>
-          <button class="button button-secondary button-small" type="button" @click="guideOpen = false">✕</button>
+          <button class="button button-secondary button-small" type="button" @click="guideOpen = false" aria-label="Tutup"><X :size="14" aria-hidden="true" /></button>
         </div>
         <div class="modal-body guide-body">
           <p class="muted">Alur pengajuan, kalender, dan aturan saldo dalam satu ringkasan.</p>

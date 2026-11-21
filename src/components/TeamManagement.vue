@@ -1,6 +1,9 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { Plus, X } from 'lucide-vue-next'
+import StatusPill from './StatusPill.vue'
+import TablePager from './TablePager.vue'
+import { confirmAction, successDialog } from '../sweetalert.js'
 
 const teams = ref([])
 const employees = ref([])
@@ -13,6 +16,11 @@ const editingId = ref(null)
 const showForm = ref(false)
 const memberIds = ref([])
 const form = reactive({ code: '', name: '', unitId: '', description: '', isActive: true })
+
+// Tampil 20 tim per halaman (konsisten dengan tabel lain).
+const page = ref(0)
+const pageSize = 20
+const paged = computed(() => teams.value.slice(page.value * pageSize, (page.value + 1) * pageSize))
 
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {})
@@ -72,6 +80,19 @@ function edit(team) {
 }
 
 async function save() {
+  const ok = await confirmAction(editingId.value
+    ? {
+        title: 'Simpan perubahan tim kerja?',
+        text: 'Perubahan nama, unit, dan anggota tim langsung berlaku.',
+        confirmText: 'Ya, simpan',
+      }
+    : {
+        title: 'Tambah tim kerja baru?',
+        text: 'Tim kerja dipakai untuk penugasan verifikasi pengajuan cuti.',
+        confirmText: 'Ya, simpan',
+        icon: 'info',
+      })
+  if (!ok) return
   saving.value = true
   error.value = ''
   notice.value = ''
@@ -99,6 +120,10 @@ async function save() {
     await load()
     resetForm()
     closeForm()
+    await successDialog({
+      title: 'Tim kerja tersimpan',
+      text: editingId.value ? 'Perubahan tim kerja berhasil disimpan.' : 'Tim kerja baru berhasil ditambahkan.',
+    })
   } catch (e) {
     error.value = e.message || 'Gagal menyimpan tim kerja.'
   } finally {
@@ -107,6 +132,20 @@ async function save() {
 }
 
 async function toggle(team) {
+  const ok = await confirmAction(team.is_active
+    ? {
+        title: 'Nonaktifkan tim kerja ini?',
+        text: 'Tim yang dinonaktifkan tidak lagi menerima penugasan verifikasi baru.',
+        confirmText: 'Ya, nonaktifkan',
+        danger: true,
+      }
+    : {
+        title: 'Aktifkan tim kerja ini?',
+        text: 'Tim yang aktif kembali menerima penugasan verifikasi.',
+        confirmText: 'Ya, aktifkan',
+        icon: 'info',
+      })
+  if (!ok) return
   error.value = ''
   try {
     await request(`/admin/teams/${team.id}/toggle`, {
@@ -128,7 +167,7 @@ onMounted(load)
     <p v-if="error" class="alert alert-danger">{{ error }}</p>
     <p v-if="notice" class="alert alert-success">{{ notice }}</p>
 
-    <section class="panel">
+    <section class="panel panel-flex">
       <div class="section-heading">
         <h2>Daftar tim kerja</h2>
         <button class="button button-primary button-small" type="button" @click="startNew">
@@ -140,12 +179,12 @@ onMounted(load)
         <table>
           <thead><tr><th>Kode</th><th>Nama tim</th><th>Unit terkait</th><th>Anggota</th><th>Status</th><th></th></tr></thead>
           <tbody>
-            <tr v-for="team in teams" :key="team.id">
+            <tr v-for="team in paged" :key="team.id">
               <td><strong>{{ team.code }}</strong></td>
               <td>{{ team.name }}<small v-if="team.description">{{ team.description }}</small></td>
               <td>{{ team.unit_name || '—' }}</td>
               <td>{{ team.member_count }}</td>
-              <td><span class="status-badge" :class="team.is_active ? 'tone-success' : 'tone-neutral'">{{ team.is_active ? 'Aktif' : 'Nonaktif' }}</span></td>
+              <td><StatusPill :status="team.is_active ? 'ACTIVE' : 'INACTIVE'" /></td>
               <td>
                 <button class="button button-secondary button-small" type="button" @click="edit(team)">Ubah</button>
                 <button class="button button-secondary button-small" type="button" @click="toggle(team)">{{ team.is_active ? 'Nonaktifkan' : 'Aktifkan' }}</button>
@@ -154,7 +193,23 @@ onMounted(load)
           </tbody>
         </table>
       </div>
+      <div v-if="paged.length" class="admin-cards team-cards">
+        <article v-for="team in paged" :key="`card-${team.id}`" class="record-card">
+          <div class="directory-card-heading">
+            <div><strong>{{ team.name }}</strong><small>{{ team.code }}</small></div>
+            <StatusPill :status="team.is_active ? 'ACTIVE' : 'INACTIVE'" />
+          </div>
+          <p>{{ team.unit_name || 'Unit belum diisi' }}</p>
+          <small>{{ team.member_count }} anggota</small>
+          <small v-if="team.description">{{ team.description }}</small>
+          <div class="team-card-actions">
+            <button class="button button-secondary" type="button" @click="edit(team)">Ubah</button>
+            <button class="button button-secondary" type="button" @click="toggle(team)">{{ team.is_active ? 'Nonaktifkan' : 'Aktifkan' }}</button>
+          </div>
+        </article>
+      </div>
       <p v-else class="empty-state">Belum ada tim kerja. Tambahkan tim baru untuk mulai mengelola anggota.</p>
+      <TablePager :page="page" :total="teams.length" :page-size="pageSize" label="tim kerja" @change="p => page = p" />
     </section>
 
     <section v-if="showForm" class="modal-backdrop-overlay" @click.self="closeForm">
@@ -243,4 +298,10 @@ onMounted(load)
   cursor: pointer;
 }
 .team-member-item small { color: var(--muted); }
+.team-cards { display: none; }
+.team-card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.team-card-actions .button { flex: 1 1 140px; justify-content: center; }
+@media (max-width: 700px) {
+  .team-cards { display: grid; gap: 10px; }
+}
 </style>
