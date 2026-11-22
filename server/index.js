@@ -19,6 +19,7 @@ import { generateLeavePdf, DOCUMENT_TEMPLATE_VERSION } from './document-pdf.js'
 import { generateReportPdf } from './report-pdf.js'
 import { runMigrations } from './migrate.js'
 import { createFixedWindowLimiter, createConcurrencyLimiter } from './rate-limit.js'
+import { sortExpression, statusOrderSql } from './sorting.js'
 
 // Audit S1/R1 (mem blokir alur kirim-ulang): driver pg mengubah kolom DATE
 // menjadi objek Date pada tengah malam zona proses — di WIB, 14 Des menjadi
@@ -1136,6 +1137,16 @@ function buildHistoryQuery(query, employeeId, { ignoreStatus = false, extraWhere
   return { where: conditions.join(' AND '), values }
 }
 
+const HISTORY_SORT_FIELDS = {
+  requestNumber: 'r.request_number',
+  employee: `COALESCE(r.employee_name, '')`,
+  leaveType: 'lt.name',
+  startDate: 'r.start_date',
+  workingDays: 'r.requested_working_days',
+  submittedAt: 'COALESCE(r.submitted_at, r.created_at)',
+  status: statusOrderSql('r.status'),
+}
+
 app.get('/api/requests', requireAuth, asyncRoute(async (req, res) => {
   // Admin/approval roles can query by employee_id; regular users see only their own
   const isApprovalRole = hasRole(req.user, 'ADMIN') || hasRole(req.user, 'HR_ANALYST') ||
@@ -1181,13 +1192,13 @@ app.get('/api/requests', requireAuth, asyncRoute(async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100)
   const offset = Math.max(Number(req.query.offset) || 0, 0)
   const result = await pool.query(
-    `SELECT r.id, r.request_number, r.leave_type_id, lt.code AS leave_type_code,
+    `SELECT r.id, r.request_number, r.employee_name, r.leave_type_id, lt.code AS leave_type_code,
             lt.name AS leave_type_name, r.start_date, r.end_date,
             r.requested_working_days, r.status, r.submitted_at, r.created_at
      FROM cuti.leave_requests r
      JOIN cuti.leave_types lt ON lt.id = r.leave_type_id
      WHERE ${where}
-     ORDER BY r.created_at DESC, r.id DESC
+     ORDER BY ${sortExpression(req.query, HISTORY_SORT_FIELDS, 'submittedAt', 'r.id DESC')}
      LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
     [...values, limit, offset],
   )
@@ -1434,7 +1445,7 @@ app.get('/api/requests/export.csv', requireAuth, asyncRoute(async (req, res) => 
      FROM cuti.leave_requests r
      JOIN cuti.leave_types lt ON lt.id = r.leave_type_id
      WHERE ${where}
-     ORDER BY r.created_at DESC, r.id DESC`,
+     ORDER BY ${sortExpression(req.query, HISTORY_SORT_FIELDS, 'submittedAt', 'r.id DESC')}`,
     values,
   )
   const columns = ['Nomor Pengajuan', 'Jenis Cuti', 'Tanggal Mulai', 'Tanggal Selesai', 'Hari Kerja', 'Status', 'Dikirim']
@@ -1451,6 +1462,17 @@ app.get('/api/requests/export.csv', requireAuth, asyncRoute(async (req, res) => 
   res.send(`\ufeff${lines.join('\r\n')}`)
 }))
 
+const QUEUE_SORT_FIELDS = {
+  requestNumber: 'q.request_number',
+  employee: `COALESCE(q.employee_name, '')`,
+  unit: `COALESCE(q.employee_unit_name, '')`,
+  leaveType: 'lt.name',
+  startDate: 'q.start_date',
+  workingDays: 'q.requested_working_days',
+  submittedAt: `COALESCE(q.submitted_at, '1970-01-01'::timestamp)`,
+  status: statusOrderSql('q.request_status'),
+}
+
 app.get('/api/queue', requireAuth, asyncRoute(async (req, res) => {
   const scope = queueScope(req.user)
   const result = await pool.query(
@@ -1463,11 +1485,22 @@ app.get('/api/queue', requireAuth, asyncRoute(async (req, res) => {
      JOIN cuti.leave_request_stages s ON s.id = q.stage_id
      JOIN cuti.leave_types lt ON lt.id = q.leave_type_id
      WHERE ${scope.sql}
-     ORDER BY q.is_overdue DESC, q.submitted_at ASC NULLS LAST`,
+     ORDER BY ${sortExpression(req.query, QUEUE_SORT_FIELDS, 'submittedAt', 'q.is_overdue DESC, q.leave_request_id DESC')}`,
     scope.values,
   )
   res.json({ items: result.rows })
 }))
+
+const APPROVAL_SORT_FIELDS = {
+  requestNumber: 'r.request_number',
+  employee: `COALESCE(r.employee_name, '')`,
+  unit: `COALESCE(r.employee_unit_name, '')`,
+  leaveType: 'lt.name',
+  startDate: 'r.start_date',
+  workingDays: 'r.requested_working_days',
+  submittedAt: 'COALESCE(r.submitted_at, r.created_at)',
+  status: statusOrderSql('r.status'),
+}
 
 app.get('/api/approvals', requireAuth, asyncRoute(async (req, res) => {
   const roles = roleCodes(req.user).filter(role =>
@@ -1514,8 +1547,7 @@ app.get('/api/approvals', requireAuth, asyncRoute(async (req, res) => {
      JOIN cuti.leave_requests r ON r.id = s.leave_request_id
      JOIN cuti.leave_types lt ON lt.id = r.leave_type_id
      WHERE ${clauses.join(' AND ')} AND s.status IN ('ACTIVE', 'COMPLETED')
-     ORDER BY CASE WHEN s.status = 'ACTIVE' THEN 0 ELSE 1 END,
-              s.due_at ASC NULLS LAST, r.submitted_at DESC NULLS LAST
+     ORDER BY ${sortExpression(req.query, APPROVAL_SORT_FIELDS, 'submittedAt', "CASE WHEN s.status = 'ACTIVE' THEN 0 ELSE 1 END, r.id DESC")}
      LIMIT 500`,
     values,
   )
@@ -4787,7 +4819,7 @@ app.get('/api/admin/reports/leaves', requireAuth, asyncRoute(async (req, res) =>
   const categoryId = String(req.query.categoryId || '').trim()
   const categoryIdClean = categoryCodes.includes(categoryId) ? categoryId : null
 
-  const params = { startDate: startDate || null, endDate: endDate || null, unitId, routeId, leaveTypeId, categoryId: categoryIdClean }
+  const params = { startDate: startDate || null, endDate: endDate || null, unitId, routeId, leaveTypeId, categoryId: categoryIdClean, sortBy: req.query.sortBy, sortDir: req.query.sortDir }
   const qbase = buildReportBaseQuery(params)
 
   // Summary metrics
@@ -4871,6 +4903,8 @@ async function loadReportForExport(query) {
     routeId,
     leaveTypeId,
     categoryId: categoryIdClean,
+    sortBy: query.sortBy,
+    sortDir: query.sortDir,
   }
   const qbase = buildReportBaseQuery(params)
   const [summaryRows, pivotRows, compRows, cancelRows, leaveTypesResult, unitsResult, routesResult] = await Promise.all([
@@ -5004,6 +5038,16 @@ function buildCompositionSheet(rows) {
   return worksheet('Komposisi', 'Komposisi', h, mapped, { 0: 260, 1: 160, 2: 100, 3: 100 })
 }
 
+const REPORT_SORT_FIELDS = {
+  requestNumber: 'lr.request_number',
+  employee: 'COALESCE(lr.employee_name, e.full_name)',
+  leaveType: 'lt.name',
+  startDate: 'lr.start_date',
+  workingDays: 'lr.approved_working_days',
+  submittedAt: 'COALESCE(lr.submitted_at, lr.created_at)',
+  status: statusOrderSql('lr.status'),
+}
+
 function buildReportBaseQuery(params) {
   const values = []
   const conditions = ['e.deleted_at IS NULL']
@@ -5048,7 +5092,7 @@ function buildReportBaseQuery(params) {
            u.full_name AS processed_by_name
     ${cancelJoin} JOIN cuti.leave_types lt ON lt.id = lr.leave_type_id
     WHERE ${where} AND lr.status IN ('WITHDRAWN','CANCELLED')
-    ORDER BY lr.submitted_at DESC`
+    ORDER BY ${sortExpression(params, REPORT_SORT_FIELDS, 'submittedAt', 'lr.id DESC')}`
   return { summarySql, pivotSql, compSql, cancelSql, values }
 }
 

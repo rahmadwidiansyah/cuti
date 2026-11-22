@@ -2,6 +2,9 @@
 import { computed, reactive, ref } from 'vue'
 import { CheckCircle2, Clock3, Eye, Inbox, RotateCcw, Search, SlidersHorizontal } from 'lucide-vue-next'
 import StatusPill from './StatusPill.vue'
+import SortableHeader from './SortableHeader.vue'
+import TableSort from './TableSort.vue'
+import { REQUEST_SORT_OPTIONS, defaultDirectionFor } from '../sort.js'
 import TablePager from './TablePager.vue'
 import { formatDateRange } from '../dates.js'
 
@@ -9,8 +12,10 @@ const props = defineProps({
   items: { type: Array, default: () => [] },
   statusCounts: { type: Object, default: () => ({ pending: 0, approved: 0, rejected: 0 }) },
   activeStatus: { type: String, default: 'pending' },
+  sortBy: { type: String, default: 'submittedAt' },
+  sortDir: { type: String, default: 'desc' },
 })
-const emit = defineEmits(['open'])
+const emit = defineEmits(['open', 'sort-change'])
 
 const stageOrder = ['ADMIN_REVIEW', 'PERTIMBANGAN_REVIEW', 'KASUBAG_REVIEW', 'KEPSTA_REVIEW', 'PPK_REVIEW']
 const stageLabel = {
@@ -173,6 +178,16 @@ function resetFilters() {
   filtersOpen.value = false
 }
 
+function changeSort(next) {
+  emit('sort-change', next)
+}
+function changeSortBy(value) {
+  changeSort({ by: value, dir: defaultDirectionFor(value) })
+}
+function changeSortDir(value) {
+  changeSort({ by: props.sortBy, dir: value })
+}
+
 </script>
 
 <template>
@@ -243,11 +258,27 @@ function resetFilters() {
     </form>
 
     <section class="q-table-panel panel-flex" aria-label="Daftar pengajuan">
+      <div class="q-sort-mobile">
+        <span class="q-sort-mobile-label">Urutkan</span>
+        <TableSort
+          :sort-by="sortBy"
+          :sort-dir="sortDir"
+          :options="REQUEST_SORT_OPTIONS"
+          @update:sort-by="changeSortBy"
+          @update:sort-dir="changeSortDir"
+        />
+      </div>
       <table class="q-table">
         <thead>
           <tr>
-            <th>No pengajuan</th><th>Pegawai</th><th>Jenis</th><th>Tanggal cuti</th>
-            <th>Durasi</th><th>Diajukan</th><th>Status</th><th aria-label="Buka"></th>
+            <SortableHeader column="requestNumber" label="No pengajuan" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="employee" label="Pegawai" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="leaveType" label="Jenis" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="startDate" label="Tanggal cuti" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="workingDays" label="Durasi" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="submittedAt" label="Diajukan" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="status" label="Status" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <th aria-label="Buka"></th>
           </tr>
         </thead>
         <tbody v-if="paged.length">
@@ -395,6 +426,8 @@ function resetFilters() {
   overflow: hidden;
 }
 .q-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.q-sort-mobile { display: none; align-items: center; gap: 8px; padding-bottom: 12px; }
+.q-sort-mobile-label { color: var(--muted); font-size: 11px; font-weight: 600; }
 .q-table th {
   padding: 16px 20px 12px;
   border-bottom: 1px solid var(--border);
@@ -472,6 +505,7 @@ function resetFilters() {
   .q-filters.filters-open select { width: 100%; }
   .q-table-panel { border: 0; background: transparent; overflow: visible; }
   .q-table { display: none; }
+  .q-sort-mobile { display: flex; }
   .q-cards { display: grid; gap: 10px; }
 }
 </style>

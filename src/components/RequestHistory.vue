@@ -1,6 +1,9 @@
 <script setup>
 import { computed } from 'vue'
 import { Paperclip, Search, X } from 'lucide-vue-next'
+import SortableHeader from './SortableHeader.vue'
+import TableSort from './TableSort.vue'
+import { REQUEST_SORT_OPTIONS, defaultDirectionFor } from '../sort.js'
 import StatusPill from './StatusPill.vue'
 import TablePager from './TablePager.vue'
 import { statusLabel } from '../status.js'
@@ -37,6 +40,17 @@ function formatDate(value) {
 function selectTab(key) {
   props.filters.status = key
   emit('apply')
+}
+function changeSort(next) {
+  props.filters.sortBy = next.by
+  props.filters.sortDir = next.dir
+  emit('apply')
+}
+function changeSortBy(value) {
+  changeSort({ by: value, dir: defaultDirectionFor(value) })
+}
+function changeSortDir(value) {
+  changeSort({ by: props.filters.sortBy, dir: value })
 }
 </script>
 
@@ -82,6 +96,14 @@ function selectTab(key) {
           <option v-for="year in years" :key="year" :value="String(year)">{{ year }}</option>
         </select>
       </label>
+      <label class="hist-select">
+        <span class="sr-only">Tanggal cuti mulai</span>
+        <input v-model="filters.startDate" type="date" aria-label="Tanggal cuti mulai" />
+      </label>
+      <label class="hist-select">
+        <span class="sr-only">Tanggal cuti akhir</span>
+        <input v-model="filters.endDate" type="date" aria-label="Tanggal cuti akhir" />
+      </label>
       <button class="button button-primary" type="submit">Terapkan</button>
       <button class="button button-quiet" type="button" @click="emit('reset')">
         <X :size="14" aria-hidden="true" /> Reset
@@ -89,11 +111,26 @@ function selectTab(key) {
     </form>
 
     <section class="hist-table-panel panel-flex">
+      <div class="hist-sort-mobile">
+        <span class="hist-sort-mobile-label">Urutkan</span>
+        <TableSort
+          :sort-by="filters.sortBy"
+          :sort-dir="filters.sortDir"
+          :options="REQUEST_SORT_OPTIONS"
+          @update:sort-by="changeSortBy"
+          @update:sort-dir="changeSortDir"
+        />
+      </div>
       <table class="hist-table">
         <thead>
           <tr>
-            <th>No pengajuan</th><th>Jenis</th><th>Tanggal cuti</th><th>Durasi</th>
-            <th>Diajukan</th><th>Status</th><th>Tahap</th><th>Lampiran</th><th></th>
+            <SortableHeader column="requestNumber" label="No pengajuan" :sort-by="filters.sortBy" :sort-dir="filters.sortDir" @sort="changeSort" />
+            <SortableHeader column="leaveType" label="Jenis" :sort-by="filters.sortBy" :sort-dir="filters.sortDir" @sort="changeSort" />
+            <SortableHeader column="startDate" label="Tanggal cuti" :sort-by="filters.sortBy" :sort-dir="filters.sortDir" @sort="changeSort" />
+            <SortableHeader column="workingDays" label="Durasi" :sort-by="filters.sortBy" :sort-dir="filters.sortDir" @sort="changeSort" />
+            <SortableHeader column="submittedAt" label="Diajukan" :sort-by="filters.sortBy" :sort-dir="filters.sortDir" @sort="changeSort" />
+            <SortableHeader column="status" label="Status" :sort-by="filters.sortBy" :sort-dir="filters.sortDir" @sort="changeSort" />
+            <th>Tahap</th><th>Lampiran</th><th></th>
           </tr>
         </thead>
         <tbody v-if="items.length">
@@ -142,11 +179,13 @@ function selectTab(key) {
 .hist-filters { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 16px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--subtle); }
 .hist-search { display:flex; align-items:center; gap:8px; width:300px; height:40px; padding:0 12px; border:1px solid var(--control-border); border-radius:var(--radius-control); color:var(--muted); background:var(--card); }
 .hist-search input { width:100%; border:0; background:transparent; color:var(--text); font-size:13px; }
-.hist-select select { width:180px; height:40px; padding:0 10px; border:1px solid var(--control-border); border-radius:var(--radius-control); background:var(--card); color:var(--text); font-size:12px; cursor:pointer; }
+.hist-select select, .hist-select input { width:180px; height:40px; padding:0 10px; border:1px solid var(--control-border); border-radius:var(--radius-control); background:var(--card); color:var(--text); font-size:12px; cursor:pointer; }
 .hist-filters .button { min-height:40px; }
 
 .hist-table-panel { min-width:0; min-height:260px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--card); overflow-x:auto; }
 .hist-table { width:100%; border-collapse:collapse; min-width:1080px; }
+.hist-sort-mobile { display: none; align-items: center; gap: 8px; padding-bottom: 12px; }
+.hist-sort-mobile-label { color: var(--muted); font-size: 11px; font-weight: 600; }
 .hist-table th { padding:16px 20px 12px; border-bottom:1px solid var(--border); color:var(--muted); font-size:9.5px; font-weight:700; letter-spacing:.06em; text-align:left; text-transform:uppercase; }
 .hist-table td { padding:12px 20px; border-bottom:1px solid var(--divider); color:var(--text); font-size:12px; }
 .hist-link { padding:0; border:0; background:transparent; color:var(--primary); font-size:12px; font-weight:650; cursor:pointer; }
@@ -166,10 +205,11 @@ function selectTab(key) {
 
 @media (max-width:700px){
   .hist-filters > label { flex:1 1 100%; }
-  .hist-search,.hist-select select { width:100%; }
+  .hist-search,.hist-select select,.hist-select input { width:100%; }
   .hist-pagination{ flex-direction:column; align-items:flex-start; }
   .hist-table-panel { border:0; background:transparent; overflow:visible; }
   .hist-table { display:none; }
+  .hist-sort-mobile { display:flex; }
   .hist-cards { display:grid; gap:10px; }
 }
 </style>

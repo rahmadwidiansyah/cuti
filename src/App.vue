@@ -45,6 +45,8 @@ const balanceYear = ref(new Date().getFullYear())
 const historyCounts = reactive({ total: 0, draft: 0, pending: 0, approved: 0, rejected: 0, returned: 0, cancelled: 0 })
 const cancelReturnView = ref('detail')
 const approvalStatus = ref('pending')
+const approvalLoadedStatus = ref('pending')
+const approvalSort = reactive({ by: 'submittedAt', dir: 'desc' })
 const approvalCounts = reactive({
   pending: 0, approved: 0, rejected: 0,
   forward: 0, final: 0, overdue: 0, today: 0, leaveTypes: 0, units: 0,
@@ -108,7 +110,7 @@ let drawingSignature = false
 const dashboard = ref(null)
 const queue = ref([])
 const history = ref([])
-const historyFilters = reactive({ year: '', leaveType: '', status: '', startDate: '', endDate: '', q: '' })
+const historyFilters = reactive({ year: '', leaveType: '', status: '', startDate: '', endDate: '', q: '', sortBy: 'submittedAt', sortDir: 'desc' })
 const historyPage = ref(0)
 // Ukuran halaman riwayat — juga dikirim ke komponen pager (20 item/halaman).
 const historyPageSize = 20
@@ -574,6 +576,7 @@ function historyQueryString(includePagination = true) {
   const map = {
     year: 'year', leaveType: 'leaveType', status: 'status',
     startDate: 'startDate', endDate: 'endDate', q: 'q',
+    sortBy: 'sortBy', sortDir: 'sortDir',
   }
   for (const [key, name] of Object.entries(map)) {
     if (historyFilters[key]) params.set(name, String(historyFilters[key]))
@@ -604,7 +607,7 @@ function applyHistoryFilters() {
 }
 
 function resetHistoryFilters() {
-  Object.assign(historyFilters, { year: '', leaveType: '', status: '', startDate: '', endDate: '', q: '' })
+  Object.assign(historyFilters, { year: '', leaveType: '', status: '', startDate: '', endDate: '', q: '', sortBy: 'submittedAt', sortDir: 'desc' })
   applyHistoryFilters()
 }
 
@@ -638,10 +641,21 @@ function mapApprovalItem(item) {
   }
 }
 
+function approvalSortQuery() {
+  return `sortBy=${encodeURIComponent(approvalSort.by)}&sortDir=${encodeURIComponent(approvalSort.dir)}`
+}
+
 async function loadApprovalHistory(status = approvalStatus.value) {
-  const result = await api(`/approvals?status=${encodeURIComponent(status)}`)
+  approvalLoadedStatus.value = status
+  const result = await api(`/approvals?status=${encodeURIComponent(status)}&${approvalSortQuery()}`)
   Object.assign(approvalCounts, result.summary || {})
   approvalItems.value = (result.items || []).map(mapApprovalItem)
+}
+
+function changeApprovalSort(next) {
+  approvalSort.by = next.by
+  approvalSort.dir = next.dir
+  loadApprovalHistory(approvalLoadedStatus.value).catch((error) => { pageError.value = errorText(error) })
 }
 
 async function changeApprovalStatus(status) {
@@ -664,7 +678,7 @@ async function loadViewData(target = view.value) {
     } else if (target === 'balance') {
       balanceData.value = await api(`/balance-details?year=${balanceYear.value}`)
     } else if (target === 'queue') {
-      const [dashboardData, queueData] = await Promise.all([api('/dashboard'), api('/queue')])
+      const [dashboardData, queueData] = await Promise.all([api('/dashboard'), api(`/queue?${approvalSortQuery()}`)])
       dashboard.value = dashboardData
       queue.value = queueData.items
       if (isAdmin.value) {
@@ -1577,6 +1591,9 @@ onMounted(() => {
           :items="displayedApprovalItems"
           :status-counts="approvalCounts"
           :active-status="approvalStatus"
+          :sort-by="approvalSort.by"
+          :sort-dir="approvalSort.dir"
+          @sort-change="changeApprovalSort"
           @open="openDetail($event, 'queue')"
         />
 
@@ -1586,6 +1603,9 @@ onMounted(() => {
           :items="displayedApprovalItems"
           :status-counts="approvalCounts"
           :active-status="approvalStatus"
+          :sort-by="approvalSort.by"
+          :sort-dir="approvalSort.dir"
+          @sort-change="changeApprovalSort"
           @status-change="changeApprovalStatus"
           @open="openDetail($event, 'queue')"
         />

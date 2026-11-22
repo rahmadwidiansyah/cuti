@@ -2,6 +2,9 @@
 import { computed, reactive, ref } from 'vue'
 import { Eye, Search, Clock, AlertTriangle, CheckCircle2, SlidersHorizontal, XCircle } from 'lucide-vue-next'
 import DecisionStatusTabs from './DecisionStatusTabs.vue'
+import SortableHeader from './SortableHeader.vue'
+import TableSort from './TableSort.vue'
+import { APPROVAL_SORT_OPTIONS, defaultDirectionFor } from '../sort.js'
 import StatusPill from './StatusPill.vue'
 import TablePager from './TablePager.vue'
 
@@ -10,8 +13,10 @@ const props = defineProps({
   items: { type: Array, default: () => [] },
   statusCounts: { type: Object, default: () => ({ pending: 0, approved: 0, rejected: 0 }) },
   activeStatus: { type: String, default: 'pending' },
+  sortBy: { type: String, default: 'submittedAt' },
+  sortDir: { type: String, default: 'desc' },
 })
-const emit = defineEmits(['open', 'status-change'])
+const emit = defineEmits(['open', 'status-change', 'sort-change'])
 
 const monthShort = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des']
 const categoryLabel = {
@@ -110,6 +115,16 @@ function resetFilters() {
   filtersOpen.value = false
 }
 
+function changeSort(next) {
+  emit('sort-change', next)
+}
+function changeSortBy(value) {
+  changeSort({ by: value, dir: defaultDirectionFor(value) })
+}
+function changeSortDir(value) {
+  changeSort({ by: props.sortBy, dir: value })
+}
+
 </script>
 
 <template>
@@ -157,16 +172,27 @@ function resetFilters() {
     </form>
 
     <section class="ap-table-panel panel-flex" :aria-label="roleInfo.title">
+      <div class="ap-sort-mobile">
+        <span class="ap-sort-mobile-label">Urutkan</span>
+        <TableSort
+          :sort-by="sortBy"
+          :sort-dir="sortDir"
+          :options="APPROVAL_SORT_OPTIONS"
+          @update:sort-by="changeSortBy"
+          @update:sort-dir="changeSortDir"
+        />
+      </div>
       <table class="ap-table">
         <thead>
           <tr>
-            <th>No pengajuan</th>
-            <th>Pegawai</th>
-            <th>Unit kerja</th>
-            <th>Jenis cuti</th>
-            <th>Tanggal cuti</th>
-            <th>Durasi</th>
-            <th>Status</th>
+            <SortableHeader column="requestNumber" label="No pengajuan" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="employee" label="Pegawai" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="unit" label="Unit kerja" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="leaveType" label="Jenis cuti" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="startDate" label="Tanggal cuti" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="workingDays" label="Durasi" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="submittedAt" label="Diajukan" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
+            <SortableHeader column="status" label="Status" :sort-by="sortBy" :sort-dir="sortDir" @sort="changeSort" />
             <th aria-label="Lihat"></th>
           </tr>
         </thead>
@@ -188,6 +214,7 @@ function resetFilters() {
             <td>{{ item.leave_type_name }}</td>
             <td class="ap-nowrap">{{ formatDate(item.start_date) }}</td>
             <td>{{ item.requested_working_days }} hari</td>
+            <td class="ap-nowrap">{{ formatDate(item.submitted_at) }}</td>
             <td>
               <StatusPill :status="statusKey(item)" :label="statusText(item)" />
             </td>
@@ -262,18 +289,21 @@ function resetFilters() {
 
 .ap-table-panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card); overflow: hidden; }
 .ap-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.ap-sort-mobile { display: none; align-items: center; gap: 8px; padding-bottom: 12px; }
+.ap-sort-mobile-label { color: var(--muted); font-size: 11px; font-weight: 600; }
 .ap-table th {
   padding: 16px; border-bottom: 1px solid var(--border);
   color: var(--muted); font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-align: left; text-transform: uppercase;
 }
-.ap-table th:nth-child(1) { width: 150px; }
-.ap-table th:nth-child(2) { width: 185px; }
-.ap-table th:nth-child(3) { width: 125px; }
-.ap-table th:nth-child(4) { width: 130px; }
-.ap-table th:nth-child(5) { width: 130px; }
-.ap-table th:nth-child(6) { width: 80px; }
-.ap-table th:nth-child(7) { width: 130px; }
-.ap-table th:nth-child(8) { width: 56px; }
+.ap-table th:nth-child(1) { width: 140px; }
+.ap-table th:nth-child(2) { width: 170px; }
+.ap-table th:nth-child(3) { width: 110px; }
+.ap-table th:nth-child(4) { width: 120px; }
+.ap-table th:nth-child(5) { width: 120px; }
+.ap-table th:nth-child(6) { width: 70px; }
+.ap-table th:nth-child(7) { width: 105px; }
+.ap-table th:nth-child(8) { width: 120px; }
+.ap-table th:nth-child(9) { width: 50px; }
 .ap-table td { padding: 12px 16px; border-bottom: 1px solid var(--divider); color: var(--text); font-size: 12px; vertical-align: middle; }
 .ap-link { padding: 0; border: 0; background: transparent; color: var(--primary); font-size: 12px; font-weight: 650; cursor: pointer; }
 .ap-link:hover { text-decoration: underline; }
@@ -299,7 +329,7 @@ function resetFilters() {
 
 @media (max-width: 1200px) {
   .ap-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ap-table { min-width: 1000px; }
+  .ap-table { min-width: 1005px; }
   .ap-table-panel { overflow-x: auto; }
 }
 @media (max-width: 700px) {
@@ -319,6 +349,7 @@ function resetFilters() {
   .ap-filters.filters-open .ap-select select { width: 100%; }
   .ap-table-panel { border: 0; background: transparent; overflow: visible; }
   .ap-table { display: none; }
+  .ap-sort-mobile { display: flex; }
   .ap-cards { display: grid; gap: 10px; }
 }
 </style>

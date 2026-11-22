@@ -2,6 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { CheckCircle2, Clock3, FileText, Info, RotateCcw } from 'lucide-vue-next'
 import DatePicker from './DatePicker.vue'
+import TableSort from './TableSort.vue'
+import { CANCELLATION_SORT_OPTIONS } from '../sort.js'
 
 const filters = reactive({
   startDate: '',
@@ -10,6 +12,8 @@ const filters = reactive({
   categoryId: '',
   routeId: '',
   leaveTypeId: '',
+  sortBy: 'submittedAt',
+  sortDir: 'desc',
 })
 const draft = reactive({ ...filters })
 const loading = ref(false)
@@ -116,8 +120,15 @@ function applyFilters() {
 }
 
 function resetFilters() {
-  Object.assign(draft, { startDate: '', endDate: '', unitId: '', categoryId: '', routeId: '', leaveTypeId: '' })
-  Object.assign(filters, { startDate: '', endDate: '', unitId: '', categoryId: '', routeId: '', leaveTypeId: '' })
+  const defaults = { startDate: '', endDate: '', unitId: '', categoryId: '', routeId: '', leaveTypeId: '', sortBy: 'submittedAt', sortDir: 'desc' }
+  Object.assign(draft, defaults)
+  Object.assign(filters, defaults)
+  loadData()
+}
+
+function changeSort(next) {
+  Object.assign(filters, next)
+  Object.assign(draft, next)
   loadData()
 }
 
@@ -222,6 +233,13 @@ onMounted(() => {
             <h2>Rekap pembatalan</h2>
             <p>Maksimal pengembalian adalah hari disetujui dikurangi hari digunakan.</p>
           </div>
+          <TableSort
+            :sort-by="filters.sortBy"
+            :sort-dir="filters.sortDir"
+            :options="CANCELLATION_SORT_OPTIONS"
+            @update:sort-by="value => changeSort({ sortBy: value })"
+            @update:sort-dir="value => changeSort({ sortDir: value })"
+          />
         </div>
         <table class="rp-table">
           <thead>
@@ -289,7 +307,7 @@ onMounted(() => {
 .rp-overview { display: grid; grid-template-columns: minmax(0, 716fr) minmax(0, 392fr); gap: 20px; align-items: start; }
 .rp-panel { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card); }
 .rp-unit, .rp-composition { min-height: 300px; }
-.rp-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.rp-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
 .rp-panel-heading h2 { margin: 0 0 4px; color: var(--ink); font-size: 16px; font-weight: 600; }
 .rp-panel-heading p { margin: 0; color: var(--muted); font-size: 10px; }
 
