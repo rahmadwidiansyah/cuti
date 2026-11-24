@@ -21,6 +21,26 @@ import TablePager from './TablePager.vue'
 import { statusLabel } from '../status.js'
 import { confirmAction, successDialog } from '../sweetalert.js'
 const emit = defineEmits(['open-request'])
+const props = defineProps({ isAdmin: { type: Boolean, default: false } })
+
+// Tampilan "Penyesuaian kuota" dipulihkan di dalam modul Pegawai & Cuti.
+// Endpoint /api/admin/balances sudah tersedia di server dan kini dipakai lagi.
+const mode = ref('directory')
+const returnMode = ref('directory')
+const quota = reactive({
+  items: [],
+  summary: {},
+  units: [],
+  categories: [],
+  years: [],
+  periodYear: new Date().getFullYear(),
+  loading: false,
+  error: '',
+  draft: { q: '', unitId: '', category: '', status: '' },
+  applied: { q: '', unitId: '', category: '', status: '' },
+  page: 0,
+})
+const quotaPageSize = 15
 
 const loading = ref(false)
 const error = ref('')
@@ -80,6 +100,8 @@ const filtered = computed(() => {
   })
 })
 const paged = computed(() => filtered.value.slice(page.value * pageSize, (page.value + 1) * pageSize))
+const quotaPaged = computed(() => quota.items.slice(quota.page * quotaPageSize, (quota.page + 1) * quotaPageSize))
+const quotaTotalPages = computed(() => Math.max(1, Math.ceil(quota.items.length / quotaPageSize)))
 
 const balance = computed(() => detail.value?.balance || null)
 const canAdjust = computed(() => Boolean(detail.value?.canAdjust))
@@ -255,6 +277,61 @@ function resetFilters() {
   page.value = 0
 }
 
+function applyQuotaFilters() {
+  Object.assign(quota.applied, quota.draft)
+  quota.page = 0
+  return loadQuota()
+}
+
+function resetQuotaFilters() {
+  Object.assign(quota.draft, { q: '', unitId: '', category: '', status: '' })
+  Object.assign(quota.applied, { q: '', unitId: '', category: '', status: '' })
+  quota.page = 0
+  return loadQuota()
+}
+
+async function loadQuota() {
+  if (!props.isAdmin) return
+  quota.loading = true
+  quota.error = ''
+  const params = new URLSearchParams({
+    year: String(year.value),
+    limit: '100',
+    offset: '0',
+  })
+  for (const [key, value] of Object.entries(quota.applied)) {
+    if (value) params.set(key === 'unitId' ? 'unitId' : key, String(value))
+  }
+  try {
+    const result = await api(`/admin/balances?${params}`)
+    quota.items = result.items || []
+    quota.summary = result.summary || {}
+    quota.units = result.units || []
+    quota.categories = result.categories || []
+    quota.years = (result.years || []).map(Number)
+    quota.periodYear = result.periodYear || year.value
+    if (!quota.years.includes(year.value)) quota.years = [...quota.years, year.value].sort((a, b) => b - a)
+  } catch (cause) {
+    quota.error = cause instanceof Error ? cause.message : 'Gagal memuat penyesuaian kuota.'
+    quota.items = []
+  } finally {
+    quota.loading = false
+  }
+}
+
+async function switchMode(next) {
+  if (next === mode.value) return
+  mode.value = next
+  notice.value = ''
+  if (next === 'quota') await loadQuota()
+}
+
+async function openQuotaDetail(item) {
+  if (!item?.employeeId) return
+  returnMode.value = 'quota'
+  await openDetail(item)
+}
+
 async function changeYear(event) {
   const next = Number(event.target.value)
   if (!Number.isInteger(next) || next === year.value) return
@@ -263,6 +340,7 @@ async function changeYear(event) {
   notice.value = ''
   detailError.value = ''
   await load()
+  if (mode.value === 'quota') await loadQuota()
   if (selectedEmployeeId.value) await loadDetail()
 }
 
@@ -284,6 +362,11 @@ function closeDetail() {
   notice.value = ''
   leaveHistory.value = []
   Object.assign(adjustForm, { deltaDays: '', reason: '', reference: '', submitting: false })
+  if (returnMode.value === 'quota') {
+    mode.value = 'quota'
+    returnMode.value = 'directory'
+    loadQuota()
+  }
 }
 
 function selectHistoryRequest(requestId) {
@@ -323,7 +406,7 @@ async function submitAdjustment() {
     })
     notice.value = result.message || 'Penyesuaian kuota tersimpan.'
     Object.assign(adjustForm, { deltaDays: '', reason: '', reference: '', submitting: false })
-    await Promise.all([loadDetail(), load()])
+    await Promise.all([loadDetail(), load(), ...(returnMode.value === 'quota' ? [loadQuota()] : [])])
     await successDialog({
       title: 'Penyesuaian tersimpan',
       text: result.message || 'Penyesuaian kuota tercatat pada riwayat transaksi saldo.',
@@ -360,7 +443,7 @@ async function submitAllocation() {
       }),
     })
     notice.value = result.message || 'Saldo berhasil dialokasikan.'
-    await Promise.all([loadDetail(), load()])
+    await Promise.all([loadDetail(), load(), ...(returnMode.value === 'quota' ? [loadQuota()] : [])])
     await successDialog({
       title: 'Alokasi tersimpan',
       text: result.message || 'Saldo tahunan berhasil dialokasikan.',
@@ -385,7 +468,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <section class="admin-directory">
+    <div v-if="!selectedEmployeeId && isAdmin" class="ad-view-tabs" role="tablist" aria-label="Tampilan Pegawai &amp; Cuti">
+      <button type="button" role="tab" :aria-selected="mode === 'directory'" :class="{ active: mode === 'directory' }" @click="switchMode('directory')">
+        Direktori pegawai
+      </button>
+      <button type="button" role="tab" :aria-selected="mode === 'quota'" :class="{ active: mode === 'quota' }" @click="switchMode('quota')">
+        Penyesuaian kuota
+      </button>
+    </div>
+
     <template v-if="!selectedEmployeeId">
+      <template v-if="mode === 'directory'">
       <p v-if="error" class="ad-error" role="alert">
         {{ error }}
         <button class="text-button" type="button" @click="load">Coba lagi</button>
@@ -541,12 +634,157 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         </p>
         <TablePager :page="page" :total="filtered.length" :page-size="pageSize" label="pegawai" @change="p => page = p" />
       </section>
+      </template>
+
+      <template v-else>
+        <section class="ad-quota-panel">
+          <header class="ad-panel-heading">
+            <div>
+              <h2>Penyesuaian kuota</h2>
+              <p>Alokasikan saldo awal atau tambah/kurangi kuota tahunan pegawai. Setiap perubahan tercatat di riwayat transaksi.</p>
+            </div>
+          </header>
+
+          <div class="ad-metrics">
+            <article class="ad-metric">
+              <div><p>Total pegawai</p><strong>{{ num(quota.summary.total) }} <span>pegawai</span></strong></div>
+              <span class="ad-icon tone-blue"><Users :size="16" aria-hidden="true" /></span>
+            </article>
+            <article class="ad-metric">
+              <div><p>Memiliki saldo</p><strong>{{ num(quota.summary.withBalance) }} <span>pegawai</span></strong></div>
+              <span class="ad-icon tone-green"><CalendarCheck :size="16" aria-hidden="true" /></span>
+            </article>
+            <article class="ad-metric">
+              <div><p>Total kuota</p><strong>{{ num(quota.summary.allocatedDays) }} <span>hari</span></strong><small>penyesuaian {{ signed(quota.summary.adjustmentDays) }}</small></div>
+              <span class="ad-icon tone-amber"><Building2 :size="16" aria-hidden="true" /></span>
+            </article>
+            <article class="ad-metric">
+              <div><p>Saldo tersedia</p><strong>{{ num(quota.summary.availableDays) }} <span>hari</span></strong></div>
+              <span class="ad-icon tone-blue"><CalendarClock :size="16" aria-hidden="true" /></span>
+            </article>
+          </div>
+
+          <form class="ad-filters" @submit.prevent="applyQuotaFilters">
+            <label class="ad-select ad-year">
+              <span class="sr-only">Periode tahun</span>
+              <select :value="year" @change="changeYear">
+                <option v-for="option in quota.years" :key="option" :value="option">Periode {{ option }}</option>
+              </select>
+              <ChevronDown :size="14" aria-hidden="true" />
+            </label>
+            <label class="ad-search">
+              <Search :size="14" aria-hidden="true" />
+              <span class="sr-only">Cari nama pegawai</span>
+              <input v-model="quota.draft.q" type="search" placeholder="Cari nama atau NIP…" />
+            </label>
+            <label class="ad-select">
+              <span class="sr-only">Unit kerja</span>
+              <select v-model="quota.draft.unitId">
+                <option value="">Semua unit kerja</option>
+                <option v-for="unit in quota.units" :key="unit.id" :value="String(unit.id)">{{ unit.unit_name }}</option>
+              </select>
+              <ChevronDown :size="14" aria-hidden="true" />
+            </label>
+            <label class="ad-select">
+              <span class="sr-only">Kategori pegawai</span>
+              <select v-model="quota.draft.category">
+                <option value="">Semua kategori</option>
+                <option v-for="category in quota.categories" :key="category.code" :value="category.code">
+                  {{ categoryLabel[category.code] || category.code }}
+                </option>
+              </select>
+              <ChevronDown :size="14" aria-hidden="true" />
+            </label>
+            <label class="ad-select">
+              <span class="sr-only">Status pegawai</span>
+              <select v-model="quota.draft.status">
+                <option value="">Semua status</option>
+                <option value="ACTIVE">Aktif</option>
+                <option value="INACTIVE">Nonaktif</option>
+              </select>
+              <ChevronDown :size="14" aria-hidden="true" />
+            </label>
+            <button class="button button-primary" type="submit">Terapkan</button>
+            <button class="button button-quiet" type="button" @click="resetQuotaFilters">Reset</button>
+          </form>
+
+          <p v-if="quota.error" class="ad-error" role="alert">
+            {{ quota.error }}
+            <button class="text-button" type="button" @click="loadQuota">Coba lagi</button>
+          </p>
+          <p v-if="quota.loading" class="ad-loading" role="status">Memuat penyesuaian kuota…</p>
+
+          <section class="ad-table-panel panel-flex" aria-label="Daftar kuota cuti pegawai">
+            <table class="ad-table ad-quota-table">
+              <thead>
+                <tr>
+                  <th>Pegawai</th><th>Unit kerja</th><th>Kategori</th><th>Kuota awal</th>
+                  <th>Penyesuaian</th><th>Terpakai</th><th>Reservasi</th><th>Tersedia</th>
+                  <th>Terakhir diubah</th><th aria-label="Aksi"></th>
+                </tr>
+              </thead>
+              <tbody v-if="quotaPaged.length">
+                <tr v-for="item in quotaPaged" :key="item.employeeId">
+                  <td>
+                    <div class="ad-person">
+                      <span class="ad-avatar" aria-hidden="true">{{ initials(item.fullName) }}</span>
+                      <span><strong>{{ item.fullName }}</strong><small>{{ item.identity || 'NIP tidak tersedia' }}</small></span>
+                    </div>
+                  </td>
+                  <td>{{ item.unitName || '-' }}</td>
+                  <td>{{ categoryLabel[item.category] || item.category }}</td>
+                  <td>{{ item.balanceId ? num(item.allocatedDays) : '—' }}</td>
+                  <td :class="{ 'ad-positive': Number(item.adjustmentDays) > 0, 'ad-negative': Number(item.adjustmentDays) < 0 }">
+                    {{ item.balanceId ? signed(item.adjustmentDays) : '—' }}
+                  </td>
+                  <td>{{ item.balanceId ? num(item.usedDays) : '—' }}</td>
+                  <td>{{ item.balanceId ? num(item.reservedDays) : '—' }}</td>
+                  <td><strong>{{ item.balanceId ? num(item.availableDays) : '—' }}</strong></td>
+                  <td>{{ dateText(item.lastAdjustmentAt) }}</td>
+                  <td>
+                    <button class="button button-small button-secondary" type="button" @click="openQuotaDetail(item)">
+                      Atur kuota
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div class="ad-cards">
+              <article v-for="item in quotaPaged" :key="`quota-${item.employeeId}`" class="ad-card">
+                <div class="ad-card-head">
+                  <span class="ad-avatar" aria-hidden="true">{{ initials(item.fullName) }}</span>
+                  <div class="ad-card-person">
+                    <strong>{{ item.fullName }}</strong>
+                    <small>{{ item.identity || 'NIP tidak tersedia' }}</small>
+                    <small>{{ categoryLabel[item.category] || item.category }} · {{ item.unitName || 'Unit tidak tersedia' }}</small>
+                  </div>
+                </div>
+                <dl class="ad-card-facts">
+                  <div><dt>Kuota</dt><dd>{{ item.balanceId ? num(item.allocatedDays) : '—' }}</dd></div>
+                  <div><dt>Penyesuaian</dt><dd>{{ item.balanceId ? signed(item.adjustmentDays) : '—' }}</dd></div>
+                  <div><dt>Terpakai</dt><dd>{{ item.balanceId ? num(item.usedDays) : '—' }}</dd></div>
+                  <div><dt>Tersedia</dt><dd>{{ item.balanceId ? num(item.availableDays) : '—' }}</dd></div>
+                </dl>
+                <button class="button button-small button-secondary" type="button" @click="openQuotaDetail(item)">
+                  Atur kuota
+                </button>
+              </article>
+            </div>
+
+            <p v-if="!quotaPaged.length && !quota.loading" class="ad-empty">
+              {{ quota.error ? 'Data belum dapat dimuat.' : 'Tidak ada pegawai yang cocok dengan filter ini.' }}
+            </p>
+            <TablePager :page="quota.page" :total="quota.items.length" :page-size="quotaPageSize" label="pegawai" @change="p => quota.page = p" />
+          </section>
+        </section>
+      </template>
     </template>
 
     <template v-else>
       <div class="ad-detail-heading">
         <button class="button button-quiet button-small" type="button" @click="closeDetail">
-          <ArrowLeft :size="15" aria-hidden="true" /> Kembali ke daftar
+          <ArrowLeft :size="15" aria-hidden="true" /> {{ returnMode === 'quota' ? 'Kembali ke penyesuaian kuota' : 'Kembali ke daftar' }}
         </button>
         <label class="ad-select ad-year ad-year-inline">
           <span class="sr-only">Periode tahun</span>
@@ -832,6 +1070,26 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   min-width: 0;
 }
 
+.ad-view-tabs {
+  display: inline-flex; gap: 4px; padding: 4px; width: fit-content; max-width: 100%;
+  border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--subtle);
+  overflow-x: auto;
+}
+.ad-view-tabs button {
+  min-height: 34px; padding: 0 14px; white-space: nowrap;
+  border: 0; border-radius: 8px; background: transparent;
+  color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.ad-view-tabs button:hover { color: var(--ink); }
+.ad-view-tabs button.active { background: var(--card); color: var(--primary); box-shadow: 0 1px 2px rgb(15 35 46 / 8%); }
+.ad-view-tabs button[aria-selected="true"] { font-weight: 700; }
+
+.ad-quota-panel { display: grid; gap: 20px; min-width: 0; }
+.ad-quota-panel > .ad-panel-heading h2 { font-size: 20px; }
+.ad-quota-table th { white-space: nowrap; }
+.ad-quota-table td { white-space: nowrap; }
+.ad-quota-table .ad-person { min-width: 180px; }
+
 .ad-error { margin: 0; padding: 12px 14px; border: 1px solid var(--danger-border); border-radius: var(--radius-control); background: var(--danger-bg); color: var(--danger-text); font-size: 13px; }
 .ad-loading { margin: 0; color: var(--muted); font-size: 13px; }
 
@@ -1088,6 +1346,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 .ad-history-meta svg { color: var(--muted); flex-shrink: 0; }
 .ad-history-actions { display: flex; align-items: center; }
 .ad-history-go { color: var(--muted); }
+
+.ad-quota-panel .ad-table-panel { overflow-x: auto; }
+.ad-quota-table { table-layout: fixed; min-width: 1140px; }
+.ad-quota-table .ad-year select { width: 140px; }
+.ad-quota-table th:nth-child(1) { width: 210px; }
+.ad-quota-table th:nth-child(2) { width: 120px; }
+.ad-quota-table th:nth-child(3) { width: 130px; }
+.ad-quota-table th:nth-child(4) { width: 90px; }
+.ad-quota-table th:nth-child(5) { width: 100px; }
+.ad-quota-table th:nth-child(6) { width: 80px; }
+.ad-quota-table th:nth-child(7) { width: 85px; }
+.ad-quota-table th:nth-child(8) { width: 85px; }
+.ad-quota-table th:nth-child(9) { width: 140px; }
+.ad-quota-table th:nth-child(10) { width: 110px; }
+.ad-quota-table .ad-person { min-width: 0; }
+.ad-quota-table .ad-person small { white-space: nowrap; }
+.ad-quota-table td { padding: 10px 12px; }
+.ad-quota-panel .ad-year select { width: 140px; }
 
 @media (max-width: 1200px) {
   .ad-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }

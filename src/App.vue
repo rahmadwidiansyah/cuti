@@ -1670,7 +1670,7 @@ onMounted(() => {
           @year-change="changeBalanceYear"
         />
 
-        <AdminDirectory v-else-if="view === 'directory'" ref="directoryRef" @open-request="openDetail" />
+        <AdminDirectory v-else-if="view === 'directory'" ref="directoryRef" :is-admin="isAdmin" @open-request="openDetail" />
 
         <AdminManagement v-else-if="view === 'admin-master'" />
 
