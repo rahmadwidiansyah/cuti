@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   AlertCircle,
   ArrowLeft,
@@ -27,6 +27,9 @@ const props = defineProps({ isAdmin: { type: Boolean, default: false } })
 // Endpoint /api/admin/balances sudah tersedia di server dan kini dipakai lagi.
 const mode = ref('directory')
 const returnMode = ref('directory')
+const quotaFormRef = ref(null)
+const quotaHighlight = ref(false)
+let quotaHighlightTimer = null
 const quota = reactive({
   items: [],
   summary: {},
@@ -328,8 +331,13 @@ async function switchMode(next) {
 
 async function openQuotaDetail(item) {
   if (!item?.employeeId) return
-  returnMode.value = 'quota'
-  await openDetail(item)
+  await openDetail(item, true)
+  await nextTick()
+  quotaFormRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  quotaFormRef.value?.querySelector('#ad-delta, #ad-allocate-days')?.focus({ preventScroll: true })
+  quotaHighlight.value = true
+  clearTimeout(quotaHighlightTimer)
+  quotaHighlightTimer = setTimeout(() => { quotaHighlight.value = false }, 1800)
 }
 
 async function changeYear(event) {
@@ -344,8 +352,10 @@ async function changeYear(event) {
   if (selectedEmployeeId.value) await loadDetail()
 }
 
-async function openDetail(item) {
+async function openDetail(item, fromQuota = false) {
   selectedEmployeeId.value = item.employeeId
+  returnMode.value = fromQuota ? 'quota' : 'directory'
+  quotaHighlight.value = false
   detail.value = null
   notice.value = ''
   detailError.value = ''
@@ -463,7 +473,10 @@ onMounted(() => {
   load()
   window.addEventListener('keydown', onKeydown)
 })
-onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  clearTimeout(quotaHighlightTimer)
+})
 </script>
 
 <template>
@@ -800,6 +813,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       <p v-if="detailLoading && !detail" class="ad-loading" role="status">Memuat rincian pegawai…</p>
 
       <template v-if="detail && !detailLoading">
+        <section v-if="returnMode === 'quota'" class="ad-quota-context">
+          <p class="eyebrow">PENYESUAIAN KUOTA · {{ detail.periodYear }}</p>
+          <h2>Penyesuaian kuota — {{ detail.employee.fullName }}</h2>
+          <p>Atur jumlah cuti tahunan pegawai ini. Setiap perubahan tercatat pada riwayat transaksi.</p>
+        </section>
+
         <section class="ad-person-card">
           <span class="ad-avatar ad-avatar-lg" aria-hidden="true">{{ initials(detail.employee.fullName) }}</span>
           <div class="ad-person-identity">
@@ -814,7 +833,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           </div>
         </section>
 
-        <div class="ad-detail-grid">
+        <div class="ad-detail-grid" :class="{ 'ad-quota-focus': returnMode === 'quota' }">
           <div class="ad-detail-main">
             <section class="ad-panel ad-balance-panel">
               <header class="ad-panel-heading">
@@ -851,13 +870,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               </div>
             </section>
 
-            <section v-if="balance && canAdjust" class="ad-panel">
+            <section v-if="balance && canAdjust" class="ad-panel ad-ledger-panel">
               <header class="ad-panel-heading">
                 <div>
                   <h3>Riwayat transaksi</h3>
                   <p>Urut terbaru. Saldo berjalan dihitung dari seluruh transaksi periode ini.</p>
                 </div>
               </header>
+              <p v-if="detail.ledger.length" class="ad-ledger-hint">Geser tabel ke samping untuk melihat kolom lainnya.</p>
               <div v-if="detail.ledger.length" class="ad-ledger-wrap">
                 <table class="ad-ledger">
                   <thead>
@@ -951,7 +971,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               </div>
             </section>
 
-            <section v-if="canAdjust && balance" class="ad-panel ad-form-panel">
+            <section v-if="canAdjust && balance" ref="quotaFormRef" class="ad-panel ad-form-panel" :class="{ 'ad-form-highlight': quotaHighlight }">
               <header class="ad-panel-heading">
                 <div>
                   <h3>Penyesuaian kuota</h3>
@@ -1025,7 +1045,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               </form>
             </section>
 
-            <section v-else-if="canAdjust" class="ad-panel ad-form-panel">
+            <section v-else-if="canAdjust" ref="quotaFormRef" class="ad-panel ad-form-panel" :class="{ 'ad-form-highlight': quotaHighlight }">
               <header class="ad-panel-heading">
                 <div>
                   <h3>Alokasikan saldo</h3>
@@ -1048,7 +1068,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               </form>
             </section>
 
-            <section v-else class="ad-panel">
+            <section v-else class="ad-panel ad-admin-note">
               <header class="ad-panel-heading">
                 <div>
                   <h3>Penyesuaian kuota</h3>
@@ -1219,6 +1239,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 .ad-alert-danger { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger-text); }
 .ad-alert-success { border-color: var(--success-border); background: var(--success-bg); color: var(--success-text); }
 
+.ad-quota-context {
+  display: grid; gap: 3px; padding: 12px 16px;
+  border-left: 3px solid var(--primary); border-radius: var(--radius-control);
+  background: var(--primary-tint);
+}
+.ad-quota-context .eyebrow { margin: 0; color: var(--primary); font-size: 10px; font-weight: 700; letter-spacing: 0.08em; }
+.ad-quota-context h2 { margin: 0; color: var(--ink); font-size: 17px; font-weight: 700; }
+.ad-quota-context > p:last-child { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
 .ad-person-card {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--card);
@@ -1264,7 +1293,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 .ad-empty-state strong { display: block; color: var(--ink); font-size: 12px; }
 .ad-empty-state p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
-.ad-ledger-wrap { overflow-x: auto; }
+.ad-ledger-hint { display: none; margin: 0 0 8px; color: var(--muted); font-size: 10.5px; }
+.ad-ledger-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .ad-ledger { width: 100%; border-collapse: collapse; min-width: 620px; }
 .ad-ledger th {
   padding: 0 10px 9px; border-bottom: 1px solid var(--border);
@@ -1288,7 +1318,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 .ad-leave-summary p { margin: 0; color: var(--muted); font-size: 11px; }
 .ad-leave-summary small { color: var(--muted); font-size: 10px; }
 
-.ad-form-panel { position: sticky; top: 88px; }
+.ad-form-panel { position: sticky; top: 88px; scroll-margin-top: 88px; }
+@media (min-width: 701px) {
+  .ad-quota-focus .ad-detail-side .ad-form-panel { order: -1; }
+}
+.ad-form-highlight { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-tint); }
 .ad-form { display: grid; gap: 14px; }
 .ad-field { display: grid; gap: 5px; }
 .ad-field label { color: var(--ink); font-size: 11px; font-weight: 600; }
@@ -1379,10 +1413,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   .ad-table { display: none; }
   .ad-cards { display: grid; gap: 12px; padding: 12px; }
   .ad-detail-main, .ad-detail-side { display: contents; }
+  .ad-ledger-hint { display: block; }
   .ad-balance-panel { order: 1; }
-  .ad-form-panel { order: 2; }
-  .ad-detail-side > .ad-panel:first-child { order: 3; }
-  .ad-detail-main > .ad-panel:last-child { order: 4; }
+  .ad-ledger-panel { order: 2; }
+  .ad-form-panel { order: 3; }
+  .ad-detail-side > .ad-panel:first-child { order: 4; }
+  .ad-detail-main > .ad-panel:last-child { order: 5; }
+  .ad-admin-note { order: 6; }
+  .ad-quota-focus .ad-form-panel { order: 0; }
+  .ad-quota-focus .ad-balance-panel { order: 1; }
+  .ad-quota-focus .ad-ledger-panel { order: 2; }
+  .ad-quota-focus .ad-detail-side > .ad-panel:first-child { order: 3; }
+  .ad-quota-focus .ad-detail-main > .ad-panel:last-child { order: 4; }
+  .ad-quota-focus .ad-admin-note { order: 5; }
   .ad-pagination { flex-direction: column; align-items: flex-start; }
   .ad-hero { flex-direction: column; align-items: stretch; gap: 14px; }
   .ad-hero-available { padding-right: 0; padding-bottom: 12px; border-right: 0; border-bottom: 1px solid var(--border); }
